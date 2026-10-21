@@ -76,22 +76,6 @@ export function apply(ctx, config = {}) {
     return String(path).replace(/[\\/]+$/, '')
   }
 
-  /** Build longest-first path remap pairs from the request or workspace document. */
-  function buildPairs(remap, workspaces) {
-    const pairs = []
-    if (remap && typeof remap === 'object') {
-      for (const [from, to] of Object.entries(remap)) {
-        if (!from || !to || String(from).trim() === String(to).trim()) continue
-        pairs.push({ from: String(from), to: String(to) })
-      }
-    }
-    if (pairs.length === 0) {
-      for (const w of workspaces) if (w.path) pairs.push({ from: w.path, to: w.path })
-    }
-    pairs.sort((a, b) => normalKey(b.from).length - normalKey(a.from).length)
-    return pairs
-  }
-
   function mapPath(path, pairs) {
     if (!path) return path
     const key = normalKey(path)
@@ -166,6 +150,66 @@ export function apply(ctx, config = {}) {
       }
     }
     return result
+  }
+
+  /** A filesystem-safe single path segment derived from a project title. */
+  function safeSegment(value, fallback) {
+    const cleaned = String(value ?? '')
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/[. ]+$/g, '')
+    return cleaned.length > 0 ? cleaned.slice(0, 80) : String(fallback ?? 'workspace')
+  }
+
+  function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
+  /**
+   * Rewrite absolute paths of the remapped roots inside one JSON value, in
+   * place. This is what keeps a restored conversation usable: tool calls and
+   * results still name the old machine's paths, and the model would chase
+   * files that no longer exist there.
+   */
+  function rewritePaths(value, pairs, stats, depth = 0) {
+    if (depth > 12) return value
+    if (typeof value === 'string') {
+      let text = value
+      for (const pair of pairs) {
+        if (pair.from === pair.to) continue
+        const variants = [
+          [pair.from, pair.to],
+          [String(pair.from).replace(/\\/g, '/'), String(pair.to).replace(/\\/g, '/')],
+        ]
+        for (const [from, to] of variants) {
+          if (!from || from.length < 4) continue
+          const pattern = new RegExp(escapeRegExp(from), 'gi')
+          text = text.replace(pattern, () => {
+            stats.count += 1
+            return to
+          })
+        }
+      }
+      return text
+    }
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) value[index] = rewritePaths(value[index], pairs, stats, depth + 1)
+      return value
+    }
+    if (value && typeof value === 'object') {
+      for (const key of Object.keys(value)) value[key] = rewritePaths(value[key], pairs, stats, depth + 1)
+      return value
+    }
+    return value
+  }
+
+  function isUnderTargets(path, targets) {
+    const key = normalKey(path)
+    return targets.some((entry) => {
+      const root = normalKey(entry.target)
+      return key === root || key.startsWith(root + '\\') || key.startsWith(root + '/')
+    })
   }
 
   /** Read the registry's global archive/pin sets from the durable unit file. */
@@ -249,7 +293,7 @@ export function apply(ctx, config = {}) {
     return {
       home,
       migrationsDir: join(home, 'migrations'),
-      codeVersion: 7,
+      codeVersion: 8,
       workspaces,
       sessions,
       archived: sets.archived,
@@ -729,19 +773,81 @@ export function apply(ctx, config = {}) {
     return result
   }
 
+  async function cleanupWorkspaces(payload) {
+    const only = Array.isArray(payload.workspaceIds) ? payload.workspaceIds.map(String) : null
+    const removed = []
+    for (const workspace of ctx.workspaceRegistry.list()) {
+      const id = String(workspace.id)
+      if (only && !only.includes(id)) continue
+      // Only registrations that point at nothing and hold nothing are safe to drop.
+      if (workspace.sessionIds.length > 0) continue
+      if (await pathExists(workspace.path)) continue
+      try {
+        removed.push({ id, path: workspace.path, removed: await ctx.workspaceRegistry.delete(id) })
+      } catch (error) {
+        removed.push({ id, path: workspace.path, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    return { removed }
+  }
+
   async function runImport(task, options) {
     const dir = resolve(String(options.bundlePath ?? ''))
     if (!options.bundlePath) throw new Error('缺少迁移包路径')
     const manifest = await readManifest(dir)
     const workspaceDoc = JSON.parse(await fsp.readFile(join(dir, 'workspaces.json'), 'utf8'))
-    const pairs = buildPairs(options.remap, workspaceDoc.workspaces ?? [])
+    const rootDir = options.rootDir && String(options.rootDir).trim() ? resolve(String(options.rootDir)) : null
+    const remapInput = options.remap && typeof options.remap === 'object' ? options.remap : {}
+
+    // Resolve one target directory per bundled project: an explicit per-project
+    // mapping wins, then <rootDir>/<project title>, then the original path.
+    const targets = []
+    const usedTargets = new Set()
+    for (const workspace of workspaceDoc.workspaces ?? []) {
+      const explicit = Object.prototype.hasOwnProperty.call(remapInput, workspace.path)
+        ? String(remapInput[workspace.path] ?? '').trim()
+        : ''
+      let target
+      if (explicit) {
+        target = resolve(explicit)
+      } else if (rootDir) {
+        const base = safeSegment(workspace.title || basename(workspace.path), workspace.id)
+        let candidate = join(rootDir, base)
+        let suffix = 2
+        while (usedTargets.has(normalKey(candidate))) {
+          candidate = join(rootDir, `${base}-${suffix}`)
+          suffix += 1
+        }
+        target = candidate
+      } else {
+        target = workspace.path
+      }
+      usedTargets.add(normalKey(target))
+      targets.push({ source: workspace, target })
+    }
+
+    const pairs = []
+    for (const entry of targets) {
+      if (entry.source.path === entry.target) continue
+      pairs.push({ from: entry.source.path, to: entry.target })
+    }
+    for (const [from, to] of Object.entries(remapInput)) {
+      if (!from || !to || String(from).trim() === String(to).trim()) continue
+      if (targets.some((entry) => normalKey(entry.source.path) === normalKey(from))) continue
+      pairs.push({ from: String(from), to: String(to) })
+    }
+    pairs.sort((a, b) => normalKey(b.from).length - normalKey(a.from).length)
+
     const report = {
       path: dir,
+      rootDir,
       workspaces: [],
       sessionsImported: 0,
       importedSessions: [],
       sessionsSkipped: [],
       flattened: 0,
+      ungrouped: 0,
+      rewritten: 0,
       filesCopied: 0,
       fileSkips: [],
       attachments: false,
@@ -761,26 +867,27 @@ export function apply(ctx, config = {}) {
     const created = []
     task.total = (workspaceDoc.workspaces ?? []).length + (manifest.sessions ?? []).length + 2
 
-    for (const workspace of workspaceDoc.workspaces ?? []) {
-      const target = mapPath(workspace.path, pairs)
+    for (const entry of targets) {
       try {
-        await fsp.mkdir(target, { recursive: true })
-        const entity = await ctx.workspaceRegistry.create(target, workspace.title)
-        if (workspace.title && entity.title !== workspace.title && !preExisting.has(String(entity.id))) {
+        await fsp.mkdir(entry.target, { recursive: true })
+        const entity = await ctx.workspaceRegistry.create(entry.target, entry.source.title)
+        if (entry.source.title && entity.title !== entry.source.title && !preExisting.has(String(entity.id))) {
           try {
-            await entity.setTitle(workspace.title)
+            await entity.setTitle(entry.source.title)
           } catch {
             /* rename is cosmetic; keep the created title */
           }
         }
-        created.push({ source: workspace, entity, target })
+        created.push({ source: entry.source, entity, target: entry.target })
         if (!preExisting.has(String(entity.id))) createdWorkspaces.add(String(entity.id))
-        report.workspaces.push({ id: String(entity.id), path: target, title: entity.title, from: workspace.path })
+        report.workspaces.push({ id: String(entity.id), path: entry.target, title: entity.title, from: entry.source.path })
       } catch (error) {
-        report.warnings.push(`项目「${workspace.title}」创建失败：${error instanceof Error ? error.message : String(error)}`)
+        report.warnings.push(
+          `项目「${entry.source.title}」创建失败：${error instanceof Error ? error.message : String(error)}`,
+        )
       }
       task.done += 1
-      task.message = `已创建项目 ${created.length}/${(workspaceDoc.workspaces ?? []).length}`
+      task.message = `已创建项目 ${created.length}/${targets.length}`
     }
 
     const tailAnchor = preOrder[0]
@@ -810,7 +917,27 @@ export function apply(ctx, config = {}) {
           ...document.header,
           version: typeof localVersion === 'number' ? localVersion : document.header.version,
         }
-        if (header.cwd) header.cwd = mapPath(header.cwd, pairs)
+        if (header.cwd) {
+          header.cwd = mapPath(header.cwd, pairs)
+          if (pairs.length > 0 && isUnderTargets(header.cwd, targets)) {
+            try {
+              await fsp.mkdir(header.cwd, { recursive: true })
+            } catch {
+              /* creating the working directory is best effort */
+            }
+          }
+        }
+
+        // Historical tool calls and results still name the old machine's paths.
+        if (options.rewritePaths !== false && pairs.length > 0) {
+          const stats = { count: 0 }
+          for (const event of events) {
+            if (event && event.data && typeof event.data === 'object') {
+              event.data = rewritePaths(event.data, pairs, stats)
+            }
+          }
+          report.rewritten += stats.count
+        }
 
         if (header.isSeeded) {
           const inherited = Number(document.inheritedEventCount ?? 0)
@@ -853,6 +980,8 @@ export function apply(ctx, config = {}) {
           } catch (error) {
             report.warnings.push(`会话 ${id} 归属到项目失败：${error instanceof Error ? error.message : String(error)}`)
           }
+        } else if (!match) {
+          report.ungrouped += 1
         }
       } catch (error) {
         report.sessionsSkipped.push({ id, reason: error instanceof Error ? error.message : String(error) })
@@ -975,6 +1104,10 @@ export function apply(ctx, config = {}) {
       }
       if (req.method === 'POST' && route === '/rollback') {
         sendJson(res, 200, await rollback(await readJson(req)))
+        return
+      }
+      if (req.method === 'POST' && route === '/cleanup') {
+        sendJson(res, 200, await cleanupWorkspaces(await readJson(req)))
         return
       }
       sendJson(res, 404, { error: '未知接口' })

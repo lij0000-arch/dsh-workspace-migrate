@@ -61,6 +61,14 @@ window.__ModuleLoader__.load({
       copied: '复制文件',
       unchanged: '未变',
       removed: '已删除',
+      importRoot: '导入到（新根目录）',
+      importRootHint: '每个项目自动建在「根目录 \\ 项目名」下；下面每一行仍可单独改。',
+      rewritePaths: '重写对话里提到的旧路径',
+      rewritePathsHint: '工具调用与结果中的旧绝对路径会换成新路径，续聊时模型才找得到文件。',
+      rewrittenPaths: '重写路径',
+      ungrouped: '未归属项目的会话',
+      cleaned: '已清理失效项目',
+      cleanup: '清理失效项目',
       noBundles: '还没有迁移包。先在旧电脑上导出。',
       loading: '加载中…',
       empty: '没有数据',
@@ -120,6 +128,14 @@ window.__ModuleLoader__.load({
       copied: 'files copied',
       unchanged: 'unchanged',
       removed: 'removed',
+      importRoot: 'Import into (new root)',
+      importRootHint: 'Each project is created at <root> / <project name>; every row below can still be edited.',
+      rewritePaths: 'Rewrite old paths mentioned in conversations',
+      rewritePathsHint: 'Absolute paths inside tool calls and results are replaced with the new ones, so a resumed conversation finds its files.',
+      rewrittenPaths: 'paths rewritten',
+      ungrouped: 'sessions not attached to a project',
+      cleaned: 'stale projects removed',
+      cleanup: 'Clean up stale projects',
       noBundles: 'No bundle yet. Export on the old computer first.',
       loading: 'Loading…',
       empty: 'Nothing here',
@@ -297,6 +313,8 @@ window.__ModuleLoader__.load({
         { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
         h('div', { style: C.ok }, `${t('importDone')} · ${t('imported')} ${result.sessionsImported} · ${t('skipped')} ${result.sessionsSkipped.length}`),
         result.flattened > 0 ? h('div', { style: C.hint }, `${t('flattened')}: ${result.flattened}`) : null,
+        result.rewritten > 0 ? h('div', { style: C.hint }, `${t('rewrittenPaths')}: ${result.rewritten}`) : null,
+        result.ungrouped > 0 ? h('div', { style: C.warn }, `${t('ungrouped')}: ${result.ungrouped}`) : null,
         result.warnings.length > 0
           ? h(
               'div',
@@ -374,6 +392,7 @@ window.__ModuleLoader__.load({
       const [includeAttachments, setIncludeAttachments] = useState(true)
       const [outDir, setOutDir] = useState('')
       const [updateTarget, setUpdateTarget] = useState('')
+      const [cleanupNote, setCleanupNote] = useState(null)
       const { task, run } = usePolling(t)
 
       const workspaces = inventory ? inventory.workspaces : []
@@ -389,6 +408,17 @@ window.__ModuleLoader__.load({
         if (next.has(id)) next.delete(id)
         else next.add(id)
         setSelected(next)
+      }
+
+      const cleanup = async () => {
+        try {
+          const result = await api.post('/cleanup', {})
+          const removed = (result.removed || []).filter((entry) => entry.removed).length
+          setCleanupNote(`${t('cleaned')} ${removed}`)
+          reload()
+        } catch (error) {
+          setCleanupNote(error instanceof Error ? error.message : String(error))
+        }
       }
 
       const running = task && task.phase === 'running'
@@ -408,9 +438,11 @@ window.__ModuleLoader__.load({
               { style: { display: 'flex', gap: 6 } },
               h('button', { style: C.button, onClick: () => setSelected(new Set(workspaces.map((w) => w.id))) }, t('selectAll')),
               h('button', { style: C.button, onClick: () => setSelected(new Set()) }, t('selectNone')),
+              h('button', { style: C.button, onClick: cleanup }, t('cleanup')),
             ),
           ),
           h('div', { style: C.hint }, t('projectsHint')),
+          cleanupNote ? h('div', { style: C.hint }, cleanupNote) : null,
           workspaces.length === 0
             ? h('div', { style: C.hint }, t('empty'))
             : h(
@@ -545,6 +577,8 @@ window.__ModuleLoader__.load({
       const [includeFiles, setIncludeFiles] = useState(true)
       const [includeAttachments, setIncludeAttachments] = useState(true)
       const [overwriteFiles, setOverwriteFiles] = useState(false)
+      const [rootDir, setRootDir] = useState('')
+      const [rewritePaths, setRewritePaths] = useState(true)
       const [loadError, setLoadError] = useState(null)
       const [undoNote, setUndoNote] = useState(null)
       const { task, run } = usePolling(t)
@@ -571,8 +605,20 @@ window.__ModuleLoader__.load({
         if (!bundlePath && bundles.length > 0) setBundlePath(bundles[0].path)
       }, [bundles, bundlePath])
 
-      const load = async (path) => {
-        setLoadError(null)
+      const applyRoot = (value) => {
+        setRootDir(value)
+        if (!preview) return
+        const base = value.trim().replace(/[\\/]+$/, '')
+        const next = { ...remap }
+        for (const workspace of preview.workspaces || []) {
+          next[workspace.path] = base
+            ? `${base}\\${String(workspace.title || workspace.path).replace(/[\\/:*?"<>|]/g, ' ').trim()}`
+            : workspace.path
+        }
+        setRemap(next)
+      }
+
+      const load = async (path) => {        setLoadError(null)
         setPreview(null)
         try {
           const value = await api.get(`/preview?path=${encodeURIComponent(path)}`)
@@ -641,6 +687,19 @@ window.__ModuleLoader__.load({
               { style: C.card },
               h('div', { style: C.cardTitle }, t('remap')),
               h('div', { style: C.hint }, t('remapHint')),
+              h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 5, padding: '4px 0 10px' } },
+                h('div', { style: C.cardTitle }, t('importRoot')),
+                h('input', {
+                  style: C.input,
+                  value: rootDir,
+                  placeholder: 'E:\\DSH',
+                  onChange: (event) => applyRoot(event.target.value),
+                  spellCheck: false,
+                }),
+                h('div', { style: C.hint }, t('importRootHint')),
+              ),
               ...(preview.workspaces || []).map((workspace) =>
                 h(
                   'div',
@@ -671,6 +730,8 @@ window.__ModuleLoader__.load({
                 ? h('label', { style: C.label }, h(Checkbox, { checked: includeAttachments, onChange: setIncludeAttachments }), t('attachments'))
                 : null,
               h('label', { style: C.label }, h(Checkbox, { checked: overwriteFiles, onChange: setOverwriteFiles }), t('overwrite')),
+              h('label', { style: C.label }, h(Checkbox, { checked: rewritePaths, onChange: setRewritePaths }), t('rewritePaths')),
+              h('div', { style: C.hint }, t('rewritePathsHint')),
               h(
                 'button',
                 {
@@ -679,6 +740,8 @@ window.__ModuleLoader__.load({
                   onClick: () => run('import', {
                     bundlePath,
                     remap,
+                    rootDir: rootDir.trim() || null,
+                    rewritePaths,
                     includeFiles,
                     includeAttachments,
                     overwriteFiles,
