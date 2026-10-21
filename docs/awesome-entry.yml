@@ -1,0 +1,13 @@
+# PR 目标：https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
+# 文件路径：data/plugins/lij0000-arch__dsh-workspace-migrate.yml
+# 只加这一个文件；README 由 CI 生成，不要手改。
+#
+# 这是「纯 GitHub、不发 npm」的版本：靠 Release 里预构建的 tarball 安装。
+# 如果以后发了 npm，删掉 tarball 行、由维护者/CI 映射 npm 包即可（或按 contributing 说明更新本文件）。
+url: https://github.com/lij0000-arch/dsh-workspace-migrate
+name: lij0000-arch/dsh-workspace-migrate
+category: session
+description:
+  en: 'Workspace-scoped DSH migration: pick projects and package their conversations, project files and image attachments into one portable folder, then restore them on another machine through the public session and workspace services with an editable old-to-new path map.'
+  zh: '按工作区迁移 DSH：勾选项目，把会话、项目文件与图片附件打成一个可搬运的文件夹，在新机器上经公开的会话/工作区服务还原，并可逐项填写旧路径到新路径的映射。'
+tarball: https://github.com/lij0000-arch/dsh-workspace-migrate/releases/download/v0.1.0/dsh-workspace-migrate-0.1.0.tgz

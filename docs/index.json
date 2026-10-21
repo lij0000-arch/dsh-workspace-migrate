@@ -1,0 +1,63 @@
+{
+  "format": 1,
+  "title": {
+    "en": "My DSH plugin index",
+    "zh": "我的 DSH 插件索引"
+  },
+  "description": {
+    "en": "Plugins published by this repository's maintainer.",
+    "zh": "本仓库维护者发布的插件。"
+  },
+  "metadata": {
+    "categories": {
+      "session": {
+        "title": {
+          "en": "Sessions & Messages",
+          "zh": "会话与消息"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-workspace-migrate",
+      "title": {
+        "en": "Workspace Migration",
+        "zh": "工作区迁移"
+      },
+      "description": {
+        "en": "Package selected workspaces, their conversations, project files and image attachments into one folder, then restore them on another machine with an editable path map.",
+        "zh": "把选中的工作区连同会话、项目文件与图片附件打成一个文件夹，在新机器上按可编辑的路径映射还原。"
+      },
+      "author": "lij0000-arch",
+      "homepage": "https://github.com/lij0000-arch/dsh-workspace-migrate",
+      "repository": {
+        "url": "https://github.com/lij0000-arch/dsh-workspace-migrate"
+      },
+      "metadata": {
+        "category": "session",
+        "keywords": [
+          "migration",
+          "workspace",
+          "session",
+          "backup"
+        ]
+      },
+      "versions": [
+        {
+          "_note": "commit 换成 push 后的 git rev-parse HEAD（40 位小写十六进制）；发过 npm 之后可改成 {\"type\":\"npm\"}",
+          "version": "0.1.0",
+          "publishTimestamp": 1792540800,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/lij0000-arch/dsh-workspace-migrate",
+            "commit": "0000000000000000000000000000000000000000"
+          },
+          "engines": {
+            "dsh": "^0.2.1-rc.2"
+          }
+        }
+      ]
+    }
+  ]
+}
