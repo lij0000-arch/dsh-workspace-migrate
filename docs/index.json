@@ -46,7 +46,7 @@
       "versions": [
         {
           "_note": "commit 换成 push 后的 git rev-parse HEAD（40 位小写十六进制）；发过 npm 之后可改成 {\"type\":\"npm\"}",
-          "version": "0.1.0",
+          "version": "0.2.0",
           "publishTimestamp": 1792540800,
           "source": {
             "type": "git",

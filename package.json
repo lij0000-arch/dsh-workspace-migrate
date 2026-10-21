@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-migrate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
   "description": "把 DeepSeek Harness 的工作区、项目成果和对话内容整体迁到另一台电脑",

@@ -132,6 +132,42 @@ export function apply(ctx, config = {}) {
     return total
   }
 
+  /**
+   * Snapshot a directory tree as `relative/path -> [size, mtimeMs]`, skipping
+   * the rebuildable directories in `skipNames`. Keys use forward slashes so a
+   * bundle written on Windows can be updated from the same relative spelling.
+   */
+  async function walkFiles(root, skipNames) {
+    const result = new Map()
+    const stack = ['']
+    while (stack.length > 0) {
+      const relative = stack.pop()
+      const absolute = relative ? join(root, relative) : root
+      let entries
+      try {
+        entries = await fsp.readdir(absolute, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        const child = relative ? `${relative}/${entry.name}` : entry.name
+        if (entry.isDirectory()) {
+          if (skipNames.has(entry.name.toLowerCase())) continue
+          stack.push(child)
+          continue
+        }
+        if (!entry.isFile()) continue
+        try {
+          const info = await fsp.stat(join(root, child))
+          result.set(child, [info.size, Math.round(info.mtimeMs)])
+        } catch {
+          /* an unreadable file is left out of the state and copied again next time */
+        }
+      }
+    }
+    return result
+  }
+
   /** Read the registry's global archive/pin sets from the durable unit file. */
   async function readRegistrySets(home) {
     try {
@@ -213,7 +249,7 @@ export function apply(ctx, config = {}) {
     return {
       home,
       migrationsDir: join(home, 'migrations'),
-      codeVersion: 6,
+      codeVersion: 7,
       workspaces,
       sessions,
       archived: sets.archived,
@@ -315,8 +351,29 @@ export function apply(ctx, config = {}) {
   async function runExport(task, options) {
     const home = dshHome()
     const outRoot = options.outDir && String(options.outDir).trim() ? resolve(String(options.outDir)) : join(home, 'migrations')
-    const dir = join(outRoot, `dsh-migration-${stamp()}`)
-    await fsp.mkdir(join(dir, 'sessions'), { recursive: true })
+    const updating = options.mode === 'update' && options.bundlePath && String(options.bundlePath).trim().length > 0
+    let dir
+    let previousState = null
+    let bundleWorkspaceIds = null
+    if (updating) {
+      dir = resolve(String(options.bundlePath))
+      await readManifest(dir)
+      try {
+        previousState = JSON.parse(await fsp.readFile(join(dir, 'state.json'), 'utf8'))
+      } catch {
+        throw new Error('这个迁移包没有增量状态（可能是旧版本导出的），请先做一次完整导出')
+      }
+      try {
+        const doc = JSON.parse(await fsp.readFile(join(dir, 'workspaces.json'), 'utf8'))
+        bundleWorkspaceIds = (doc.workspaces ?? []).map((workspace) => String(workspace.id))
+      } catch {
+        bundleWorkspaceIds = null
+      }
+      await fsp.mkdir(join(dir, 'sessions'), { recursive: true })
+    } else {
+      dir = join(outRoot, `dsh-migration-${stamp()}`)
+      await fsp.mkdir(join(dir, 'sessions'), { recursive: true })
+    }
 
     task.message = '刷新会话日志…'
     await ctx.sessionPersistence.flush()
@@ -324,10 +381,14 @@ export function apply(ctx, config = {}) {
     const snapshots = await ctx.sessionPersistence.list()
     const snapshotById = new Map(snapshots.map((snapshot) => [String(snapshot.header.id), snapshot]))
     const allWorkspaces = ctx.workspaceRegistry.list()
+    // An update keeps the bundle's own workspace set: re-selecting everything
+    // would silently pull unrelated projects into a bundle meant for a subset.
     const selected =
       Array.isArray(options.workspaceIds) && options.workspaceIds.length > 0
         ? allWorkspaces.filter((workspace) => options.workspaceIds.includes(String(workspace.id)))
-        : allWorkspaces
+        : updating && bundleWorkspaceIds
+          ? allWorkspaces.filter((workspace) => bundleWorkspaceIds.includes(String(workspace.id)))
+          : allWorkspaces
 
     const sessionIds = new Set()
     for (const workspace of selected) for (const id of workspace.sessionIds) sessionIds.add(String(id))
@@ -355,13 +416,38 @@ export function apply(ctx, config = {}) {
         return leftChild - rightChild || (left.createdAt ?? 0) - (right.createdAt ?? 0)
       })
 
-    task.total = ordered.length + (options.includeFiles ? selected.length : 0) + 1
+    task.total = ordered.length + (options.includeFiles ? selected.length : 0) + 2
     const manifestSessions = []
     const includedIds = new Set()
+    const sessionState = {}
     let bytes = 0
+    let sessionsReused = 0
 
     const zstd = await loadZstd()
     for (const id of ordered) {
+      const snapshot = snapshotById.get(id)
+      const previous = previousState?.sessions?.[id]
+      // Reuse only when the source log itself is unchanged: compare the
+      // backend's own size/event count, never the packaged artifact size.
+      const sourceBytes = typeof snapshot?.sizeBytes === 'number' ? snapshot.sizeBytes : null
+      const sourceEvents = typeof snapshot?.eventCount === 'number' ? snapshot.eventCount : null
+      if (
+        previous &&
+        previous.meta &&
+        previous.meta.file &&
+        sourceBytes !== null &&
+        previous.sourceBytes === sourceBytes &&
+        previous.sourceEvents === sourceEvents &&
+        (await pathExists(join(dir, 'sessions', previous.meta.file)))
+      ) {
+        includedIds.add(id)
+        manifestSessions.push(previous.meta)
+        sessionState[id] = previous
+        sessionsReused += 1
+        task.done += 1
+        task.message = `复用未变化的会话 ${sessionsReused} 个`
+        continue
+      }
       const handle = await ctx.sessionPersistence.open(id, 'read')
       try {
         const { events } = await handle.read()
@@ -376,7 +462,7 @@ export function apply(ctx, config = {}) {
         await fsp.writeFile(join(dir, 'sessions', file), packed ?? text)
         bytes += packed ? packed.length : Buffer.byteLength(text)
         includedIds.add(id)
-        manifestSessions.push({
+        const meta = {
           id,
           file,
           compressed: Boolean(packed),
@@ -386,7 +472,15 @@ export function apply(ctx, config = {}) {
           seeded: Boolean(handle.header.isSeeded),
           inherited: handle.inheritedEventCount ?? 0,
           events: Array.isArray(events) ? events.length : 0,
-        })
+        }
+        manifestSessions.push(meta)
+        sessionState[id] = {
+          meta,
+          sourceBytes,
+          sourceEvents,
+          bytes: packed ? packed.length : Buffer.byteLength(text),
+          events: Array.isArray(events) ? events.length : 0,
+        }
       } finally {
         await handle.close()
       }
@@ -412,6 +506,11 @@ export function apply(ctx, config = {}) {
 
     const fileWarnings = []
     const outKey = normalKey(dir)
+    const filesState = {}
+    let filesCopied = 0
+    let filesUnchanged = 0
+    let filesRemoved = 0
+    let bytesCopied = 0
     for (const workspace of selected) {
       if (!options.includeFiles) break
       const source = workspace.path
@@ -426,16 +525,50 @@ export function apply(ctx, config = {}) {
         task.done += 1
         continue
       }
-      await fsp.cp(source, join(dir, 'files', safeName(workspace.id)), {
-        recursive: true,
-        force: true,
-        filter: (entry) => {
-          if (normalKey(entry) === normalKey(source)) return true
-          return !excludes.has(basename(entry).toLowerCase())
-        },
-      })
+      const dest = join(dir, 'files', safeName(workspace.id))
+      const current = await walkFiles(source, excludes)
+      if (updating) {
+        const previousFiles = previousState.files?.[workspace.id] ?? {}
+        for (const [relative, info] of current) {
+          const before = previousFiles[relative]
+          if (before && before[0] === info[0] && before[1] === info[1] && (await pathExists(join(dest, relative)))) {
+            filesUnchanged += 1
+            continue
+          }
+          const target = join(dest, relative)
+          await fsp.mkdir(dirname(target), { recursive: true })
+          await fsp.copyFile(join(source, relative), target)
+          filesCopied += 1
+          bytesCopied += info[0]
+        }
+        for (const relative of Object.keys(previousFiles)) {
+          if (current.has(relative)) continue
+          await fsp.rm(join(dest, relative), { force: true })
+          filesRemoved += 1
+        }
+      } else {
+        await fsp.cp(source, dest, {
+          recursive: true,
+          force: true,
+          filter: (entry) => {
+            if (normalKey(entry) === normalKey(source)) return true
+            return !excludes.has(basename(entry).toLowerCase())
+          },
+        })
+        filesCopied += current.size
+        for (const info of current.values()) bytesCopied += info[0]
+      }
+      filesState[workspace.id] = Object.fromEntries(current)
       task.done += 1
-      task.message = `已复制项目文件：${workspace.title}`
+      task.message = updating
+        ? `增量更新：${workspace.title}（变更 ${filesCopied}，未变 ${filesUnchanged}）`
+        : `已复制项目文件：${workspace.title}`
+    }
+    if (updating) {
+      for (const oldId of Object.keys(previousState.files ?? {})) {
+        if (filesState[oldId]) continue
+        await fsp.rm(join(dir, 'files', oldId), { recursive: true, force: true })
+      }
     }
 
     let attachmentsBytes = 0
@@ -463,6 +596,7 @@ export function apply(ctx, config = {}) {
       schema: BUNDLE_SCHEMA,
       kind: BUNDLE_KIND,
       plugin: 'plugin/dsh-migrate',
+      mode: updating ? 'update' : 'full',
       createdAt: new Date().toISOString(),
       source: {
         home,
@@ -483,16 +617,26 @@ export function apply(ctx, config = {}) {
       pinned: workspaceDoc.pinned.length,
     }
     await fsp.writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
+    await fsp.writeFile(
+      join(dir, 'state.json'),
+      JSON.stringify({ version: 1, createdAt: new Date().toISOString(), sessions: sessionState, files: filesState }),
+    )
     task.done += 1
 
     return {
       path: dir,
+      mode: updating ? 'update' : 'full',
       sessions: manifestSessions.length,
+      sessionsReused,
       workspaces: workspaceDoc.workspaces.length,
       bytes: totalBytes,
       sessionBytes: bytes,
       filesBytes,
       attachmentsBytes,
+      filesCopied,
+      filesUnchanged,
+      filesRemoved,
+      bytesCopied,
       warnings: fileWarnings,
     }
   }
