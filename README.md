@@ -10,8 +10,24 @@
 
 ## 安装
 
-- **从 npm**（发布后）：`dsh plugin --profile web add <包名>`，或 设置 → 插件 里搜索安装
-- **从迁移包**：用包里 `plugin/dsh-migrate/` 这个目录安装
+**先确认 profile**：插件按 profile 隔离，**你现在用的界面是哪个 profile，就必须装到哪个**。装错的表现是「装好了，但设置里看不到这个页签」。
+
+- DSH 桌面端 App → 一般是 `desktop`
+- 命令行 `dsh web` → `web`
+- 不确定时，在会话里执行 `echo $env:DSH_PROFILE`（PowerShell）或 `echo $DSH_PROFILE`（bash）
+
+安装方式：
+
+- **从 GitHub Release（推荐）**
+  ```powershell
+  dsh plugin --profile <你的 profile> add https://github.com/lij0000-arch/dsh-workspace-migrate/releases/download/v0.3.0/dsh-workspace-migrate-0.3.0.tgz
+  ```
+- **从本地文件夹或 tgz**
+  ```powershell
+  dsh plugin --profile <你的 profile> add "D:\path\to\dsh-migrate"
+  ```
+  命令行装完要重启 DSH（新装的包在启动时加载）。
+- **在界面里装**：设置 → 插件 的安装入口；或在一个对话里让 agent 用 `plugin_manager` 安装，返回 `application: applied` 后刷新页面即可，无需重启。
 - **本地开发**：profile 以 `link:` 依赖本目录；改完 `index.js` 要在插件页把本插件关掉再打开才会重新加载，`client.js` 刷新页面即可
 
 ## 能力与边界
@@ -67,6 +83,18 @@
 - 归档/置顶状态会尽量恢复
 - 导入错了可以用「撤销这次导入」按本次报告里的 id 回滚
 - 报告里的「未归属项目的会话」表示该会话的 cwd 不落在任何项目目录，检查一下路径映射即可
+
+## 导入前体检
+
+会话里引用过的图片/文件如果在新机器上不存在，续聊时请求会在准备阶段失败（表现为「DeepSeek Messages transport failed」）。导入页的 **导入前体检** 会先把包里每个会话的附件引用扫一遍，对照本机 `~/.dsh/attachments` 报告缺多少、涉及哪些会话。
+
+```
+1 个会话 · 37 个附件引用 · 6 个缺失
+建议：包内带了 attachments 目录，勾选「包含图片附件」即可补齐
+• session-xxxx — 6/37
+```
+
+导入时若没勾选附件、且会话确实有缺失，报告里也会写「缺失附件的会话: N」。修法：把旧机器的 `~/.dsh/attachments` 整个拷到新机器同名位置，**重启 DSH**，这些会话即可续聊（附件引用是内容寻址的，文件到位就解析得到）。
 
 ## 清理失效项目
 
