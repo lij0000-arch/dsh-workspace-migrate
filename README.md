@@ -1,5 +1,7 @@
 # dsh-workspace-migrate
 
+[![npm](https://img.shields.io/npm/v/dsh-workspace-migrate)](https://www.npmjs.com/package/dsh-workspace-migrate)
+[![DSH Plugin Store](https://img.shields.io/badge/DSH%20Plugin%20Store-listed-4C8DFF)](https://www.dshplugin.store/plugin/lij0000-arch/dsh-workspace-migrate)
 [![release](https://img.shields.io/github/v/release/lij0000-arch/dsh-workspace-migrate?label=release)](https://github.com/lij0000-arch/dsh-workspace-migrate/releases)
 [![stars](https://img.shields.io/github/stars/lij0000-arch/dsh-workspace-migrate)](https://github.com/lij0000-arch/dsh-workspace-migrate)
 [![license](https://img.shields.io/github/license/lij0000-arch/dsh-workspace-migrate)](LICENSE)
@@ -16,7 +18,7 @@
 
 ```bash
 # 桌面端（大多数情况）
-dsh plugin --profile desktop add https://github.com/lij0000-arch/dsh-workspace-migrate/releases/download/v0.5.0/dsh-workspace-migrate-0.5.0.tgz
+dsh plugin --profile desktop add dsh-workspace-migrate
 ```
 
 不想用命令行：设置 → 插件 里安装，或在一个对话里让 agent 用 `plugin_manager` 装这个仓库。装完刷新页面，**设置 → 迁移** 出现即可用。
