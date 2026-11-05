@@ -54,6 +54,13 @@ window.__ModuleLoader__.load({
       undoConfirm: '将删除本次导入创建的项目登记和会话文件，确定吗？',
       undone: '已撤销本次导入',
       refused: '拒绝',
+      update: '增量更新已有迁移包',
+      updateHint: '只复制新增或修改过的文件，未变化的文件与会话直接复用。适合同一个包反复同步。',
+      updateNow: '开始增量更新',
+      reused: '复用会话',
+      copied: '复制文件',
+      unchanged: '未变',
+      removed: '已删除',
       noBundles: '还没有迁移包。先在旧电脑上导出。',
       loading: '加载中…',
       empty: '没有数据',
@@ -106,6 +113,13 @@ window.__ModuleLoader__.load({
       undoConfirm: 'This deletes the workspace registrations and session files created by this import. Continue?',
       undone: 'Import undone',
       refused: 'refused',
+      update: 'Update an existing bundle',
+      updateHint: 'Copies only added or changed files and reuses unchanged sessions, so repeated syncs stay cheap.',
+      updateNow: 'Start incremental update',
+      reused: 'sessions reused',
+      copied: 'files copied',
+      unchanged: 'unchanged',
+      removed: 'removed',
       noBundles: 'No bundle yet. Export on the old computer first.',
       loading: 'Loading…',
       empty: 'Nothing here',
@@ -261,6 +275,13 @@ window.__ModuleLoader__.load({
           'div',
           { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
           h('div', { style: C.ok }, `${t('exportDone')} · ${result.sessions} ${t('sessions')} · ${fmtBytes(result.bytes)}`),
+          result.mode === 'update'
+            ? h(
+                'div',
+                { style: C.hint },
+                `${t('reused')} ${result.sessionsReused} · ${t('copied')} ${result.filesCopied} (${fmtBytes(result.bytesCopied)}) · ${t('unchanged')} ${result.filesUnchanged} · ${t('removed')} ${result.filesRemoved}`,
+              )
+            : null,
           h('div', { style: C.mono }, result.path),
           (result.warnings || []).length > 0
             ? h(
@@ -352,10 +373,16 @@ window.__ModuleLoader__.load({
       const [includeFiles, setIncludeFiles] = useState(true)
       const [includeAttachments, setIncludeAttachments] = useState(true)
       const [outDir, setOutDir] = useState('')
+      const [updateTarget, setUpdateTarget] = useState('')
       const { task, run } = usePolling(t)
 
       const workspaces = inventory ? inventory.workspaces : []
+      const bundles = inventory && inventory.bundles ? inventory.bundles : []
       const active = selected === null ? new Set(workspaces.map((workspace) => workspace.id)) : selected
+
+      useEffect(() => {
+        if (!updateTarget && bundles.length > 0) setUpdateTarget(bundles[0].path)
+      }, [bundles, updateTarget])
 
       const toggle = (id) => {
         const next = new Set(active)
@@ -441,6 +468,65 @@ window.__ModuleLoader__.load({
               running ? t('exportRunning') : t('startExport'),
             ),
           ),
+          bundles.length > 0
+            ? h(
+                'div',
+                {
+                  style: {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 7,
+                    borderTop: '1px solid var(--dsw-alias-border-l1)',
+                    paddingTop: 11,
+                  },
+                },
+                h('div', { style: C.cardTitle }, t('update')),
+                h('div', { style: C.hint }, t('updateHint')),
+                h(
+                  'div',
+                  { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                  bundles.length > 0
+                    ? h(
+                        'select',
+                        {
+                          style: { ...C.input, flex: 1 },
+                          value: updateTarget,
+                          onChange: (event) => setUpdateTarget(event.target.value),
+                        },
+                        ...bundles.map((bundle) =>
+                          h(
+                            'option',
+                            { key: bundle.path, value: bundle.path },
+                            `${bundle.name} · ${bundle.sessions} ${t('sessions')}`,
+                          ),
+                        ),
+                      )
+                    : null,
+                  h(
+                    'button',
+                    {
+                      style: running ? { ...C.button, ...C.primaryOff } : C.button,
+                      disabled: running || !updateTarget,
+                      onClick: () =>
+                        run('export', {
+                          mode: 'update',
+                          bundlePath: updateTarget,
+                          includeFiles,
+                          includeAttachments,
+                        }),
+                    },
+                    t('updateNow'),
+                  ),
+                ),
+                h('input', {
+                  style: C.input,
+                  value: updateTarget,
+                  placeholder: 'D:\\path\\to\\dsh-migration-…',
+                  onChange: (event) => setUpdateTarget(event.target.value),
+                  spellCheck: false,
+                }),
+              )
+            : null,
           h(Progress, { task }),
           h(TaskResult, { t, task, kind: 'export' }),
         ),
