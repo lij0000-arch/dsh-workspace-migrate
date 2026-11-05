@@ -62,7 +62,7 @@ window.__ModuleLoader__.load({
       unchanged: '未变',
       removed: '已删除',
       importRoot: '导入到（新根目录）',
-      importRootHint: '每个项目自动建在「根目录 \\ 项目名」下；下面每一行仍可单独改。',
+      importRootHint: '每个项目会自动建一个以项目名命名的子文件夹；下面每一行仍可单独改。',
       rewritePaths: '重写对话里提到的旧路径',
       rewritePathsHint: '工具调用与结果中的旧绝对路径会换成新路径，续聊时模型才找得到文件。',
       rewrittenPaths: '重写路径',
@@ -135,7 +135,7 @@ window.__ModuleLoader__.load({
       unchanged: 'unchanged',
       removed: 'removed',
       importRoot: 'Import into (new root)',
-      importRootHint: 'Each project is created at <root> / <project name>; every row below can still be edited.',
+      importRootHint: 'Each project gets a subfolder named after it; every row below can still be edited.',
       rewritePaths: 'Rewrite old paths mentioned in conversations',
       rewritePathsHint: 'Absolute paths inside tool calls and results are replaced with the new ones, so a resumed conversation finds its files.',
       rewrittenPaths: 'paths rewritten',
@@ -200,8 +200,12 @@ window.__ModuleLoader__.load({
         padding: '7px 13px', fontSize: 12.5, cursor: 'pointer',
       },
       primary: {
-        appearance: 'none', border: 'none', borderRadius: 8, background: 'var(--dsw-alias-brand-primary)',
-        color: '#fff', padding: '8px 16px', fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
+        appearance: 'none',
+        border: '1px solid var(--dsw-alias-brand-primary)',
+        borderRadius: 8,
+        background: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, var(--dsw-alias-bg-base))',
+        color: 'var(--dsw-alias-brand-primary)',
+        padding: '8px 16px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
       },
       primaryOff: { opacity: 0.5, cursor: 'default' },
       label: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
@@ -622,15 +626,26 @@ window.__ModuleLoader__.load({
         if (!bundlePath && bundles.length > 0) setBundlePath(bundles[0].path)
       }, [bundles, bundlePath])
 
+      const posixTarget = Boolean(
+        preview && (preview.workspaces || []).some((workspace) => String(workspace.path || '').startsWith('/')),
+      )
+      const targetSeparator = posixTarget ? '/' : '\\'
+
       const applyRoot = (value) => {
         setRootDir(value)
         if (!preview) return
-        const base = value.trim().replace(/[\\/]+$/, '')
+        const trimmed = value.trim()
+        // Follow the separator style of what was typed, then of the bundle:
+        // a POSIX bundle imported on Linux must never grow backslashes.
+        const separator =
+          trimmed.startsWith('/') || (trimmed.includes('/') && !trimmed.includes('\\')) ? '/' : targetSeparator
+        const base = trimmed.replace(/[\\/]+$/, '')
         const next = { ...remap }
         for (const workspace of preview.workspaces || []) {
-          next[workspace.path] = base
-            ? `${base}\\${String(workspace.title || workspace.path).replace(/[\\/:*?"<>|]/g, ' ').trim()}`
-            : workspace.path
+          const name = String(workspace.title || workspace.path)
+            .replace(/[\\/:*?"<>|]/g, ' ')
+            .trim()
+          next[workspace.path] = base ? `${base}${separator}${name}` : workspace.path
         }
         setRemap(next)
       }
@@ -756,7 +771,7 @@ window.__ModuleLoader__.load({
                 h('input', {
                   style: C.input,
                   value: rootDir,
-                  placeholder: 'E:\\DSH',
+                  placeholder: posixTarget ? '/home/<user>/dsh' : 'E:\\DSH',
                   onChange: (event) => applyRoot(event.target.value),
                   spellCheck: false,
                 }),

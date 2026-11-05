@@ -1,34 +1,38 @@
 # dsh-workspace-migrate
 
-把一台电脑上的 DeepSeek Harness 状态整体搬到另一台：工作区（项目列表与会话归属）、项目成果（项目目录里的文件）、对话内容（完整会话事件流），以及可选的图片附件。
+[![release](https://img.shields.io/github/v/release/lij0000-arch/dsh-workspace-migrate?label=release)](https://github.com/lij0000-arch/dsh-workspace-migrate/releases)
+[![stars](https://img.shields.io/github/stars/lij0000-arch/dsh-workspace-migrate)](https://github.com/lij0000-arch/dsh-workspace-migrate)
+[![license](https://img.shields.io/github/license/lij0000-arch/dsh-workspace-migrate)](LICENSE)
 
-## 用之前先知道
+换电脑，把 DeepSeek Harness 里的**项目、对话和文件**一起带走，而且搬过去的旧对话还能接着聊。
 
-迁移包是**文件夹**，不是压缩包；拷走整个文件夹即可（U 盘、网盘、局域网都行）。
+**和别的迁移工具不一样的三点：**
 
-两边机器需要装同一个插件。导出时插件会把自己复制进迁移包的 `plugin/dsh-migrate/`，新电脑上从这个目录安装即可。
+- **按工作区选**，不是整机全量：勾哪个项目就带走哪个项目的会话、归属、置顶/归档、文件和附件。
+- **指定新根目录**：导入时填一个目录，每个项目自动建 `<根>/<项目名>`，并把历史对话里的旧绝对路径**重写**成新路径——这是「搬过去就能接着聊」的关键。
+- **增量同步**：之后想再同步一次，只复制改动的文件，没变化的会话直接复用。
 
 ## 安装
 
-**先确认 profile**：插件按 profile 隔离，**你现在用的界面是哪个 profile，就必须装到哪个**。装错的表现是「装好了，但设置里看不到这个页签」。
+```bash
+# 桌面端（大多数情况）
+dsh plugin --profile desktop add https://github.com/lij0000-arch/dsh-workspace-migrate/releases/download/v0.5.0/dsh-workspace-migrate-0.5.0.tgz
+```
 
-- DSH 桌面端 App → 一般是 `desktop`
-- 命令行 `dsh web` → `web`
-- 不确定时，在会话里执行 `echo $env:DSH_PROFILE`（PowerShell）或 `echo $DSH_PROFILE`（bash）
+不想用命令行：设置 → 插件 里安装，或在一个对话里让 agent 用 `plugin_manager` 装这个仓库。装完刷新页面，**设置 → 迁移** 出现即可用。
 
-安装方式：
+> 插件按 profile 隔离：**你现在用的界面是哪个 profile，就装到哪个**。装错的表现是「装好了，但设置里看不到这个页签」。桌面端一般是 `desktop`，`dsh web` 是 `web`；不确定就执行 `echo $env:DSH_PROFILE`。
 
-- **从 GitHub Release（推荐）**
-  ```powershell
-  dsh plugin --profile <你的 profile> add https://github.com/lij0000-arch/dsh-workspace-migrate/releases/download/v0.3.0/dsh-workspace-migrate-0.3.0.tgz
-  ```
-- **从本地文件夹或 tgz**
-  ```powershell
-  dsh plugin --profile <你的 profile> add "D:\path\to\dsh-migrate"
-  ```
-  命令行装完要重启 DSH（新装的包在启动时加载）。
-- **在界面里装**：设置 → 插件 的安装入口；或在一个对话里让 agent 用 `plugin_manager` 安装，返回 `application: applied` 后刷新页面即可，无需重启。
-- **本地开发**：profile 以 `link:` 依赖本目录；改完 `index.js` 要在插件页把本插件关掉再打开才会重新加载，`client.js` 刷新页面即可
+## 怎么用（两步）
+
+1. **旧电脑**：设置 → 迁移 → 导出（旧电脑）→ 勾项目 → 开始导出，得到一个文件夹，拷到新电脑。
+2. **新电脑**：设置 → 迁移 → 导入 → 选包 → 填**新根目录** → 导入前体检 → 开始导入。
+
+完成后刷新页面，项目、对话、文件都在新位置，旧对话可以继续。
+
+## 用之前先知道
+
+迁移包是**文件夹**，不是压缩包；拷走整个文件夹即可（U 盘、网盘、局域网都行）。两边机器需要装同一个插件；导出时插件会把自己复制进迁移包的 `plugin/dsh-migrate/`，新电脑上也能从这个目录装。
 
 ## 能力与边界
 

@@ -162,6 +162,18 @@ export function apply(ctx, config = {}) {
     return cleaned.length > 0 ? cleaned.slice(0, 80) : String(fallback ?? 'workspace')
   }
 
+  /**
+   * Normalize a user-supplied target path by its own style, so a POSIX root
+   * such as `/home/evan` never keeps Windows separators pasted from a bundle
+   * that came from Windows (and a `D:\...` root keeps backslashes on Windows).
+   */
+  function normalizeTargetPath(value) {
+    const text = String(value ?? '').trim()
+    if (text.startsWith('/')) return text.replace(/\\/g, '/')
+    if (/^[A-Za-z]:[\\/]/.test(text)) return text.replace(/\//g, '\\')
+    return text
+  }
+
   function escapeRegExp(text) {
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
@@ -293,7 +305,7 @@ export function apply(ctx, config = {}) {
     return {
       home,
       migrationsDir: join(home, 'migrations'),
-      codeVersion: 9,
+      codeVersion: 10,
       workspaces,
       sessions,
       archived: sets.archived,
@@ -884,7 +896,8 @@ export function apply(ctx, config = {}) {
     if (!options.bundlePath) throw new Error('缺少迁移包路径')
     const manifest = await readManifest(dir)
     const workspaceDoc = JSON.parse(await fsp.readFile(join(dir, 'workspaces.json'), 'utf8'))
-    const rootDir = options.rootDir && String(options.rootDir).trim() ? resolve(String(options.rootDir)) : null
+    const rootDir =
+      options.rootDir && String(options.rootDir).trim() ? resolve(normalizeTargetPath(options.rootDir)) : null
     const remapInput = options.remap && typeof options.remap === 'object' ? options.remap : {}
 
     // Resolve one target directory per bundled project: an explicit per-project
@@ -897,7 +910,7 @@ export function apply(ctx, config = {}) {
         : ''
       let target
       if (explicit) {
-        target = resolve(explicit)
+        target = resolve(normalizeTargetPath(explicit))
       } else if (rootDir) {
         const base = safeSegment(workspace.title || basename(workspace.path), workspace.id)
         let candidate = join(rootDir, base)
