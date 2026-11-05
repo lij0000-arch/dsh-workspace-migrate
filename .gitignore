@@ -3,3 +3,8 @@ dist/
 *.tgz
 .DS_Store
 Thumbs.db
+
+# Promo material stays on this machine - see AGENTS.md in the workspace root
+docs/promo/
+screenshots/
+recordings/
