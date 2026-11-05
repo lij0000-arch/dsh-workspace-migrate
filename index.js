@@ -293,7 +293,7 @@ export function apply(ctx, config = {}) {
     return {
       home,
       migrationsDir: join(home, 'migrations'),
-      codeVersion: 8,
+      codeVersion: 9,
       workspaces,
       sessions,
       archived: sets.archived,
@@ -791,6 +791,94 @@ export function apply(ctx, config = {}) {
     return { removed }
   }
 
+  // ── attachment audit ─────────────────────────────────────────────────────
+
+  /** Collect every attachment reference reachable from one event payload. */
+  function collectAttachments(value, out, depth = 0) {
+    if (depth > 12 || value === null || typeof value !== 'object') return
+    if (Array.isArray(value)) {
+      for (const item of value) collectAttachments(item, out, depth + 1)
+      return
+    }
+    if (typeof value.attachmentId === 'string' && !out.has(value.attachmentId)) out.set(value.attachmentId, value)
+    for (const key of Object.keys(value)) collectAttachments(value[key], out, depth + 1)
+  }
+
+  /** Whether this machine can still resolve one attachment reference. */
+  function attachmentExists(ref) {
+    const attachments = ctx.get('attachments')
+    if (!attachments) return true
+    try {
+      if (typeof ref.mediaType === 'string' && typeof attachments.imageHostPath === 'function') {
+        return typeof attachments.imageHostPath(ref) === 'string'
+      }
+      if (typeof attachments.fileHostPath === 'function') {
+        return typeof attachments.fileHostPath(ref) === 'string'
+      }
+    } catch {
+      return false
+    }
+    return true
+  }
+
+  function auditDocument(document) {
+    const refs = new Map()
+    for (const event of document.events ?? []) {
+      if (event && event.data) collectAttachments(event.data, refs)
+    }
+    const missingIds = []
+    for (const [id, ref] of refs) if (!attachmentExists(ref)) missingIds.push(id)
+    return { refs: refs.size, missing: missingIds.length, missingIds: missingIds.slice(0, 20) }
+  }
+
+  async function auditBundle(bundlePath) {
+    if (!bundlePath) throw new Error('缺少迁移包路径')
+    const dir = resolve(String(bundlePath))
+    const manifest = await readManifest(dir)
+    const problems = []
+    let totalRefs = 0
+    let totalMissing = 0
+    let scanned = 0
+    for (const meta of manifest.sessions ?? []) {
+      let document
+      try {
+        document = await loadSessionDocument(dir, meta)
+      } catch {
+        continue
+      }
+      scanned += 1
+      const result = auditDocument(document)
+      totalRefs += result.refs
+      totalMissing += result.missing
+      if (result.missing > 0) {
+        problems.push({
+          id: String(meta.id),
+          cwd: meta.cwd ?? null,
+          refs: result.refs,
+          missing: result.missing,
+          missingIds: result.missingIds,
+        })
+      }
+    }
+    const attachmentsInBundle = await pathExists(join(dir, 'attachments'))
+    return {
+      path: dir,
+      sessions: (manifest.sessions ?? []).length,
+      scanned,
+      attachmentsInBundle,
+      attachmentService: Boolean(ctx.get('attachments')),
+      totalRefs,
+      totalMissing,
+      problems,
+      advice:
+        totalMissing === 0
+          ? null
+          : attachmentsInBundle
+            ? '包内带了 attachments 目录：勾选「包含图片附件」会把它们装到本机；导入后仍提示缺失，说明该附件在旧机器上就已经不在了。'
+            : '包内没有附件。把旧机器的 ~/.dsh/attachments 整个拷到新机器同名位置，或重新导出并勾选附件。',
+    }
+  }
+
   async function runImport(task, options) {
     const dir = resolve(String(options.bundlePath ?? ''))
     if (!options.bundlePath) throw new Error('缺少迁移包路径')
@@ -848,11 +936,14 @@ export function apply(ctx, config = {}) {
       flattened: 0,
       ungrouped: 0,
       rewritten: 0,
+      missingAttachments: 0,
+      attachmentGaps: [],
       filesCopied: 0,
       fileSkips: [],
       attachments: false,
       warnings: [],
     }
+    const willInstallAttachments = Boolean(options.includeAttachments) && (await pathExists(join(dir, 'attachments')))
 
     const snapshots = await ctx.sessionPersistence.list()
     const localVersion = pickFormatVersion(snapshots)
@@ -912,6 +1003,13 @@ export function apply(ctx, config = {}) {
       }
       try {
         const document = await loadSessionDocument(dir, meta)
+        if (!willInstallAttachments) {
+          const audit = auditDocument(document)
+          if (audit.missing > 0) {
+            report.missingAttachments += 1
+            report.attachmentGaps.push({ id, missing: audit.missing, total: audit.refs })
+          }
+        }
         let events = Array.isArray(document.events) ? document.events : []
         let header = {
           ...document.header,
@@ -1082,6 +1180,10 @@ export function apply(ctx, config = {}) {
       }
       if (req.method === 'GET' && route === '/preview') {
         sendJson(res, 200, await preview(url.searchParams.get('path')))
+        return
+      }
+      if (req.method === 'GET' && route === '/check') {
+        sendJson(res, 200, await auditBundle(url.searchParams.get('path')))
         return
       }
       if (req.method === 'GET' && route === '/task') {

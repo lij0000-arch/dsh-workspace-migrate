@@ -69,6 +69,12 @@ window.__ModuleLoader__.load({
       ungrouped: '未归属项目的会话',
       cleaned: '已清理失效项目',
       cleanup: '清理失效项目',
+      checkup: '导入前体检',
+      checkupRunning: '正在检查…',
+      refs: '附件引用',
+      missingRefs: '缺失',
+      attachmentAdvice: '建议',
+      missingAttachments: '缺失附件的会话',
       noBundles: '还没有迁移包。先在旧电脑上导出。',
       loading: '加载中…',
       empty: '没有数据',
@@ -136,6 +142,12 @@ window.__ModuleLoader__.load({
       ungrouped: 'sessions not attached to a project',
       cleaned: 'stale projects removed',
       cleanup: 'Clean up stale projects',
+      checkup: 'Pre-flight check',
+      checkupRunning: 'Checking…',
+      refs: 'attachment refs',
+      missingRefs: 'missing',
+      attachmentAdvice: 'Advice',
+      missingAttachments: 'sessions with missing attachments',
       noBundles: 'No bundle yet. Export on the old computer first.',
       loading: 'Loading…',
       empty: 'Nothing here',
@@ -314,6 +326,9 @@ window.__ModuleLoader__.load({
         h('div', { style: C.ok }, `${t('importDone')} · ${t('imported')} ${result.sessionsImported} · ${t('skipped')} ${result.sessionsSkipped.length}`),
         result.flattened > 0 ? h('div', { style: C.hint }, `${t('flattened')}: ${result.flattened}`) : null,
         result.rewritten > 0 ? h('div', { style: C.hint }, `${t('rewrittenPaths')}: ${result.rewritten}`) : null,
+        result.missingAttachments > 0
+          ? h('div', { style: C.warn }, `${t('missingAttachments')}: ${result.missingAttachments}`)
+          : null,
         result.ungrouped > 0 ? h('div', { style: C.warn }, `${t('ungrouped')}: ${result.ungrouped}`) : null,
         result.warnings.length > 0
           ? h(
@@ -579,6 +594,8 @@ window.__ModuleLoader__.load({
       const [overwriteFiles, setOverwriteFiles] = useState(false)
       const [rootDir, setRootDir] = useState('')
       const [rewritePaths, setRewritePaths] = useState(true)
+      const [check, setCheck] = useState(null)
+      const [checking, setChecking] = useState(false)
       const [loadError, setLoadError] = useState(null)
       const [undoNote, setUndoNote] = useState(null)
       const { task, run } = usePolling(t)
@@ -618,7 +635,22 @@ window.__ModuleLoader__.load({
         setRemap(next)
       }
 
-      const load = async (path) => {        setLoadError(null)
+      const runCheck = async () => {
+        if (!bundlePath) return
+        setChecking(true)
+        setCheck(null)
+        try {
+          setCheck(await api.get(`/check?path=${encodeURIComponent(bundlePath)}`))
+        } catch (error) {
+          setLoadError(error instanceof Error ? error.message : String(error))
+        } finally {
+          setChecking(false)
+        }
+      }
+
+      const load = async (path) => {
+        setCheck(null)
+        setLoadError(null)
         setPreview(null)
         try {
           const value = await api.get(`/preview?path=${encodeURIComponent(path)}`)
@@ -667,6 +699,36 @@ window.__ModuleLoader__.load({
             }),
             h('button', { style: C.button, onClick: () => bundlePath && load(bundlePath) }, t('loadPreview')),
           ),
+          h(
+            'div',
+            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h(
+              'button',
+              {
+                style: checking ? { ...C.button, ...C.primaryOff } : C.button,
+                disabled: checking || !bundlePath,
+                onClick: runCheck,
+              },
+              checking ? t('checkupRunning') : t('checkup'),
+            ),
+            check
+              ? h(
+                  'span',
+                  { style: check.totalMissing === 0 ? C.ok : C.warn },
+                  `${check.sessions} ${t('sessions')} · ${check.totalRefs} ${t('refs')} · ${check.totalMissing} ${t('missingRefs')}`,
+                )
+              : null,
+          ),
+          check && check.advice ? h('div', { style: C.warn }, `${t('attachmentAdvice')}: ${check.advice}`) : null,
+          check && check.problems.length > 0
+            ? h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 150, overflowY: 'auto' } },
+                ...check.problems.map((problem) =>
+                  h('div', { key: problem.id, style: C.hint }, `• ${problem.id} — ${problem.missing}/${problem.refs}`),
+                ),
+              )
+            : null,
           loadError ? h('div', { style: C.error }, loadError) : null,
         ),
         preview
