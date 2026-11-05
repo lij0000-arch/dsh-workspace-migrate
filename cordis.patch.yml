@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-workspace-migrate
+      name: 'dsh-workspace-migrate'

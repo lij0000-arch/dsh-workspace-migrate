@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Migration">
+  <rect width="64" height="64" rx="14" fill="#247bbf"/>
+  <g fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="8" y="17" width="17" height="13" rx="2.5"/>
+    <path d="M13 30v4h7"/>
+    <rect x="39" y="34" width="17" height="13" rx="2.5"/>
+    <path d="M44 34v-4h7"/>
+  </g>
+  <g fill="none" stroke="#bfe0ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M27 22h6a4 4 0 0 1 4 4v3"/>
+    <path d="M37 26l-3.4 4.2L33.6 26"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="12" cy="42" r="2"/>
+    <circle cx="20" cy="42" r="2"/>
+    <circle cx="28" cy="42" r="2"/>
+  </g>
+</svg>

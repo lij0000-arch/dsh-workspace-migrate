@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Migrate to another computer",
+    "description": "Package workspaces, project files, and conversations, then restore them on a new machine with path remapping."
+  }
+}
