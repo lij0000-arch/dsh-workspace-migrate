@@ -1157,16 +1157,6 @@ export function apply(ctx, config = {}) {
     res.end(body)
   }
 
-  function sameOrigin(req) {
-    const origin = req.headers.origin
-    if (!origin) return true
-    try {
-      return new URL(origin).host === req.headers.host
-    } catch {
-      return false
-    }
-  }
-
   async function readJson(req) {
     const chunks = []
     let size = 0
@@ -1179,9 +1169,40 @@ export function apply(ctx, config = {}) {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))
   }
 
+  /**
+   * 身份认证。宿主提供 `connection` 服务时必须用它：
+   *   ctx.connection.admit({ headers }) 会校验浏览器签名凭据（或 API token），
+   *   返回 `{}` 或 `{ rejection: 401 | 403 }`。
+   * 没有该服务（老宿主）时退回 Origin 检查，并额外要求 Origin 存在——
+   * 缺 Origin 的请求只可能来自非浏览器客户端。
+   */
+  function authenticate(req) {
+    const connection = ctx.get('connection')
+    if (connection) {
+      try {
+        const admission = connection.admit({ headers: req.headers })
+        if (admission && admission.rejection) return { status: admission.rejection }
+        return {}
+      } catch {
+        return { status: 401 }
+      }
+    }
+    const origin = req.headers.origin
+    if (!origin) return { status: 401 }
+    try {
+      if (new URL(origin).host !== req.headers.host) return { status: 403 }
+    } catch {
+      return { status: 403 }
+    }
+    return {}
+  }
+
   async function handler(req, res) {
-    if (!sameOrigin(req)) {
-      sendJson(res, 403, { error: '拒绝跨站请求' })
+    const auth = authenticate(req)
+    if (auth.status) {
+      sendJson(res, auth.status, {
+        error: auth.status === 401 ? '需要先在 Harness 中登录（缺少或无效的浏览器凭据）' : '拒绝跨站请求',
+      })
       return
     }
     const url = new URL(req.url ?? '/', 'http://localhost')

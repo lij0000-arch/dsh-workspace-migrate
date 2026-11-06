@@ -41,7 +41,8 @@ dsh plugin --profile desktop add dsh-workspace-migrate
 - **读**：`~/.dsh/sessions`（会话事件流）、`~/.dsh/storages/workspace.json`（项目登记、置顶/归档集合）、`~/.dsh/attachments`、以及所选项目目录
 - **写**：经公开服务新建会话与项目登记（`sessionPersistence` / `workspaceRegistry`）、按路径映射复制项目文件与附件
 - **删**：只有「撤销这次导入」会删，而且只删**本次进程内由本插件创建**的项目登记与会话目录，其它 id 一律拒绝
-- **网络**：不向外发起请求；仅在本机 `127.0.0.1` 注册 `/api/dsh-migrate` 供当前页面调用，并校验请求来源
+- **网络**：不向外发起请求；仅在本机 `127.0.0.1` 注册 `/api/dsh-migrate` 供当前页面调用
+- **鉴权**：每个请求都经宿主 `ctx.connection.admit()` 校验浏览器签名凭据（401/403 拒绝）；老宿主没有该服务时，退回同源检查并要求 Origin 必须存在
 - **凭据**：不读取、不导出 `~/.dsh/.credentials.yaml`
 - **隐私**：迁移包含完整对话与项目文件，导出目录不要放在公开位置
 
