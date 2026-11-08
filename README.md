@@ -8,6 +8,8 @@
 
 换电脑，把 DeepSeek Harness 里的**项目、对话和文件**一起带走，而且搬过去的旧对话还能接着聊。
 
+> 已被 [awesome-dsh-plugin](https://awesome-dsh-plugin.com/zh/p/lij0000-arch/dsh-workspace-migrate/) 收录 · npm 周下载 700+ · 适配 DSH 0.2.1（rc.2 – rc.5）
+
 **和别的迁移工具不一样的三点：**
 
 - **按工作区选**，不是整机全量：勾哪个项目就带走哪个项目的会话、归属、置顶/归档、文件和附件。
