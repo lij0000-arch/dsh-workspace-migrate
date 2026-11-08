@@ -1176,33 +1176,39 @@ export function apply(ctx, config = {}) {
    * 没有该服务（老宿主）时退回 Origin 检查，并额外要求 Origin 存在——
    * 缺 Origin 的请求只可能来自非浏览器客户端。
    */
+  /**
+   * 身份认证。只认宿主的 `connection` 服务：
+   *   ctx.connection.requestRejection({ headers }) —— 宿主自带的 Host/Origin 围栏
+   *   + 浏览器签名凭据（login-token cookie）校验，被拒时返回 401/403。
+   * 没有这个服务就**直接拒绝**：Origin/Host 只是请求头，客户端可以随便写，
+   * 不能当身份凭据用。迁移、回滚、清理这类会写盘的操作宁可不可用，也不可无认证。
+   */
   function authenticate(req) {
     const connection = ctx.get('connection')
-    if (connection) {
-      try {
-        const admission = connection.admit({ headers: req.headers })
-        if (admission && admission.rejection) return { status: admission.rejection }
-        return {}
-      } catch {
-        return { status: 401 }
-      }
-    }
-    const origin = req.headers.origin
-    if (!origin) return { status: 401 }
+    if (!connection) return { status: 503, reason: 'unavailable' }
     try {
-      if (new URL(origin).host !== req.headers.host) return { status: 403 }
+      if (typeof connection.requestRejection === 'function') {
+        const rejection = connection.requestRejection({ headers: req.headers })
+        return rejection ? { status: rejection } : {}
+      }
+      const admission = connection.admit({ headers: req.headers })
+      if (admission && admission.rejection) return { status: admission.rejection }
+      return {}
     } catch {
-      return { status: 403 }
+      return { status: 401 }
     }
-    return {}
   }
 
   async function handler(req, res) {
     const auth = authenticate(req)
     if (auth.status) {
-      sendJson(res, auth.status, {
-        error: auth.status === 401 ? '需要先在 Harness 中登录（缺少或无效的浏览器凭据）' : '拒绝跨站请求',
-      })
+      const message =
+        auth.reason === 'unavailable'
+          ? '宿主未提供 connection 认证服务，已拒绝处理（不做无身份校验的迁移）'
+          : auth.status === 401
+            ? '需要先在 Harness 中登录（缺少或无效的浏览器凭据）'
+            : '拒绝跨站请求'
+      sendJson(res, auth.status, { error: message })
       return
     }
     const url = new URL(req.url ?? '/', 'http://localhost')
