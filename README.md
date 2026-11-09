@@ -2,6 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/dsh-workspace-migrate)](https://www.npmjs.com/package/dsh-workspace-migrate)
 [![DSH Plugin Store](https://img.shields.io/badge/DSH%20Plugin%20Store-listed-4C8DFF)](https://www.dshplugin.store/plugin/lij0000-arch/dsh-workspace-migrate)
+[![dshopen](https://img.shields.io/badge/dshopen.org-listed-2EA44F)](https://dshopen.org/plugins/dsh-workspace-migrate)
 [![release](https://img.shields.io/github/v/release/lij0000-arch/dsh-workspace-migrate?label=release)](https://github.com/lij0000-arch/dsh-workspace-migrate/releases)
 [![stars](https://img.shields.io/github/stars/lij0000-arch/dsh-workspace-migrate)](https://github.com/lij0000-arch/dsh-workspace-migrate)
 [![license](https://img.shields.io/github/license/lij0000-arch/dsh-workspace-migrate)](LICENSE)
