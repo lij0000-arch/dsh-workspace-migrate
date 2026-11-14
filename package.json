@@ -1,54 +1,55 @@
 {
-  "name": "dsh-workspace-migrate",
-  "version": "0.5.4",
-  "private": false,
-  "type": "module",
-  "description": "把 DeepSeek Harness 的工作区、项目成果和对话内容整体迁到另一台电脑",
-  "license": "MIT",
-  "keywords": [
-    "dsh-plugin",
-    "deepseek-harness",
-    "migration",
-    "backup",
-    "workspace",
-    "session"
-  ],
-  "engines": {
-    "dsh": ">=0.2.1-rc.2 <0.3.0 || >=0.2.2-rc.1 <0.3.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lij0000-arch/dsh-workspace-migrate.git"
-  },
-  "homepage": "https://github.com/lij0000-arch/dsh-workspace-migrate#readme",
-  "bugs": {
-    "url": "https://github.com/lij0000-arch/dsh-workspace-migrate/issues"
-  },
-  "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
-    "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
-  },
-  "files": [
-    "index.js",
-    "client.js",
-    "cordis.patch.yml",
-    "locale/*.json",
-    "icon.svg",
-    "README.md",
-    "LICENSE"
-  ],
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web",
-      "immediately": true,
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-settings"
-      ]
-    }
-  }
+    "name":  "dsh-workspace-migrate",
+    "version":  "0.5.5",
+    "private":  false,
+    "type":  "module",
+    "description":  "把 DeepSeek Harness 的工作区、项目成果和对话内容整体迁到另一台电脑",
+    "license":  "MIT",
+    "keywords":  [
+                     "dsh-plugin",
+                     "deepseek-harness",
+                     "migration",
+                     "backup",
+                     "workspace",
+                     "session",
+                     "dsh"
+                 ],
+    "engines":  {
+                    "dsh":  "\u003e=0.2.1-rc.2 \u003c0.3.0 || \u003e=0.2.2-rc.1 \u003c0.3.0"
+                },
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/lij0000-arch/dsh-workspace-migrate.git"
+                   },
+    "homepage":  "https://github.com/lij0000-arch/dsh-workspace-migrate#readme",
+    "bugs":  {
+                 "url":  "https://github.com/lij0000-arch/dsh-workspace-migrate/issues"
+             },
+    "exports":  {
+                    ".":  "./index.js",
+                    "./client":  "./client.js",
+                    "./locale/*.json":  "./locale/*.json",
+                    "./icon":  "./icon.svg"
+                },
+    "files":  [
+                  "index.js",
+                  "client.js",
+                  "cordis.patch.yml",
+                  "locale/*.json",
+                  "icon.svg",
+                  "README.md",
+                  "LICENSE"
+              ],
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           },
+                "client":  {
+                               "platform":  "web",
+                               "immediately":  true,
+                               "inject":  [
+                                              "@deepseek-ai/dsh-client-ui-settings"
+                                          ]
+                           }
+            }
 }

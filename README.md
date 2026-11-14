@@ -35,6 +35,8 @@ dsh plugin --profile desktop add dsh-workspace-migrate
 1. **旧电脑**：设置 → 迁移 → 导出（旧电脑）→ 勾项目 → 开始导出，得到一个文件夹，拷到新电脑。
 2. **新电脑**：设置 → 迁移 → 导入 → 选包 → 填**新根目录** → 导入前体检 → 开始导入。
 
+![设置 → 迁移 → 导出（旧电脑）：勾选要带走的工作区，项目名与路径已打码](https://raw.githubusercontent.com/lij0000-arch/dsh-workspace-migrate/main/docs/images/export-page.png)
+
 完成后刷新页面，项目、对话、文件都在新位置，旧对话可以继续。
 
 ## 用之前先知道
