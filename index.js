@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 const ROUTE_PREFIX = '/api/dsh-migrate'
 const BUNDLE_SCHEMA = 1
 const BUNDLE_KIND = 'dsh-migration-bundle'
+const SELF_PACKAGE = 'dsh-workspace-migrate'
 const DEFAULT_EXCLUDES = ['node_modules', '.git', '.venv', 'venv', '__pycache__', '.cache', '.pnpm-store', 'dist', '.next']
 const MAX_TASKS = 20
 
@@ -64,7 +65,16 @@ export function apply(ctx, config = {}) {
   }
 
   function stamp() {
-    return new Date().toISOString().replace('T', '-').replace(/:/g, '').slice(0, 15)
+    // Local time, not UTC: the folder name is read by a person on this machine.
+    const now = new Date()
+    const pad = (value) => String(value).padStart(2, '0')
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+  }
+
+  function localDay() {
+    const now = new Date()
+    const pad = (value) => String(value).padStart(2, '0')
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
   }
 
   function normalKey(path) {
@@ -302,10 +312,16 @@ export function apply(ctx, config = {}) {
     }
     const sets = await readRegistrySets(home)
     const attachmentsRoot = join(home, 'attachments')
+    let plugins = null
+    try {
+      plugins = await readProfilePlugins(home)
+    } catch {
+      plugins = null
+    }
     return {
       home,
       migrationsDir: join(home, 'migrations'),
-      codeVersion: 10,
+      codeVersion: 11,
       workspaces,
       sessions,
       archived: sets.archived,
@@ -313,6 +329,7 @@ export function apply(ctx, config = {}) {
       hasAttachments: await pathExists(attachmentsRoot),
       bundles: await listBundles(),
       excludes: [...excludes],
+      plugins,
     }
   }
 
@@ -334,6 +351,7 @@ export function apply(ctx, config = {}) {
         id: workspace.id,
         path: workspace.path,
         title: workspace.title,
+        folder: workspace.folder ?? null,
         sessions: Array.isArray(workspace.sessionIds) ? workspace.sessionIds.length : 0,
         hasFiles: true,
       }))
@@ -342,8 +360,18 @@ export function apply(ctx, config = {}) {
     }
     const sizes = {}
     for (const workspace of workspaces) {
-      const files = join(dir, 'files', safeName(workspace.id))
+      const files = join(dir, 'files', workspace.folder ? String(workspace.folder) : safeName(workspace.id))
       sizes[workspace.id] = (await pathExists(files)) ? await dirSize(files) : 0
+    }
+    let plugins = null
+    try {
+      const doc = JSON.parse(await fsp.readFile(join(dir, 'plugins.json'), 'utf8'))
+      plugins = {
+        profile: doc.profile ?? null,
+        list: Array.isArray(doc.plugins) ? doc.plugins : [],
+      }
+    } catch {
+      plugins = null
     }
     return {
       path: dir,
@@ -353,6 +381,7 @@ export function apply(ctx, config = {}) {
       excludes: manifest.excludes ?? [],
       sessions: Array.isArray(manifest.sessions) ? manifest.sessions.length : 0,
       workspaces: workspaces.map((workspace) => ({ ...workspace, bytes: sizes[workspace.id] ?? 0 })),
+      plugins,
       attachments: await pathExists(join(dir, 'attachments')),
       bytes: manifest.bytes ?? null,
     }
@@ -402,6 +431,57 @@ export function apply(ctx, config = {}) {
     return task
   }
 
+  /**
+   * Classify a profile dependency so the import page can say what is
+   * restorable and what is not.
+   */
+  function pluginType(name, spec) {
+    if (String(name).startsWith('@deepseek-ai/')) return 'official'
+    const text = String(spec ?? '')
+    if (text.startsWith('link:') || text.startsWith('file:')) return 'link'
+    if (text.startsWith('git+') || text.startsWith('github:') || text.startsWith('gitlab:') || text.startsWith('bitbucket:')) return 'git'
+    if (text.startsWith('http://') || text.startsWith('https://')) return 'tarball'
+    return 'npm'
+  }
+
+  /**
+   * Read the profile that hosts this plugin and list its dependencies.
+   * Returns null when no profile can be read, so export never fails over it.
+   */
+  async function readProfilePlugins(home) {
+    const root = join(home, 'profiles')
+    const profiles = []
+    let entries = []
+    try {
+      entries = await fsp.readdir(root, { withFileTypes: true })
+    } catch {
+      return null
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      try {
+        const doc = JSON.parse(await fsp.readFile(join(root, entry.name, 'package.json'), 'utf8'))
+        profiles.push({ name: entry.name, doc })
+      } catch {
+        /* a profile without a readable package.json is simply not ours */
+      }
+    }
+    if (profiles.length === 0) return null
+    const hosting = profiles.find((profile) => Object.prototype.hasOwnProperty.call(profile.doc?.dependencies ?? {}, SELF_PACKAGE))
+    const chosen = hosting ?? profiles[0]
+    const deps = chosen.doc?.dependencies ?? {}
+    const bundles = chosen.doc?.dsh?.profile?.bundles ?? []
+    const plugins = Object.entries(deps)
+      .filter(([name]) => name !== SELF_PACKAGE)
+      .map(([name, spec]) => ({
+        name,
+        spec: String(spec ?? ''),
+        type: pluginType(name, spec),
+        enabled: bundles.includes(name),
+      }))
+    return { profile: chosen.name, profiles: profiles.map((profile) => profile.name), plugins }
+  }
+
   // ── export ───────────────────────────────────────────────────────────────
 
   async function runExport(task, options) {
@@ -427,7 +507,23 @@ export function apply(ctx, config = {}) {
       }
       await fsp.mkdir(join(dir, 'sessions'), { recursive: true })
     } else {
-      dir = join(outRoot, `dsh-migration-${stamp()}`)
+      // A single project names the bundle after itself so the folder makes sense
+      // on its own; several projects keep the neutral timestamped name and are
+      // separated per project inside files/.
+      const requested = Array.isArray(options.workspaceIds) ? options.workspaceIds.map(String) : []
+      let label = 'dsh-migration'
+      if (requested.length === 1) {
+        const only = ctx.workspaceRegistry.list().find((workspace) => String(workspace.id) === requested[0])
+        if (only) label = safeSegment(only.title || basename(only.path), 'workspace').slice(0, 40)
+      }
+      const base = `${label}-${stamp()}`
+      let candidate = join(outRoot, base)
+      let attempt = 2
+      while (await pathExists(candidate)) {
+        candidate = join(outRoot, `${base}-${attempt}`)
+        attempt += 1
+      }
+      dir = candidate
       await fsp.mkdir(join(dir, 'sessions'), { recursive: true })
     }
 
@@ -544,14 +640,49 @@ export function apply(ctx, config = {}) {
       task.message = `已导出会话 ${task.done}/${ordered.length}`
     }
 
+    const previousFolders = new Map()
+    if (updating) {
+      try {
+        const previousDoc = JSON.parse(await fsp.readFile(join(dir, 'workspaces.json'), 'utf8'))
+        for (const item of previousDoc.workspaces ?? []) {
+          if (item && item.id && item.folder) previousFolders.set(String(item.id), String(item.folder))
+        }
+      } catch {
+        /* a missing or older document just means fresh folder names */
+      }
+    }
+    // One readable folder per project inside the bundle: "<title>-<YYYYMMDD>".
+    const usedFolders = new Set()
+    const folders = new Map()
+    const bundleDay = localDay()
+    for (const workspace of selected) {
+      const id = String(workspace.id)
+      const kept = previousFolders.get(id)
+      if (kept) {
+        usedFolders.add(kept)
+        folders.set(id, kept)
+        continue
+      }
+      const base = `${safeSegment(workspace.title || basename(workspace.path), id)}-${bundleDay}`
+      let name = base
+      let attempt = 2
+      while (usedFolders.has(name)) {
+        name = `${base}-${attempt}`
+        attempt += 1
+      }
+      usedFolders.add(name)
+      folders.set(id, name)
+    }
+
     const sets = await readRegistrySets(home)
     const workspaceDoc = {
-      version: 1,
+      version: 2,
       order: selected.map((workspace) => String(workspace.id)),
       workspaces: selected.map((workspace) => ({
         id: String(workspace.id),
         path: workspace.path,
         title: workspace.title,
+        folder: folders.get(String(workspace.id)) ?? null,
         createdAt: workspace.createdAt ?? null,
         sessionIds: [...workspace.sessionIds].map(String).filter((id) => includedIds.has(id)),
       })),
@@ -581,7 +712,7 @@ export function apply(ctx, config = {}) {
         task.done += 1
         continue
       }
-      const dest = join(dir, 'files', safeName(workspace.id))
+      const dest = join(dir, 'files', folders.get(String(workspace.id)) ?? safeName(workspace.id))
       const current = await walkFiles(source, excludes)
       if (updating) {
         const previousFiles = previousState.files?.[workspace.id] ?? {}
@@ -623,7 +754,10 @@ export function apply(ctx, config = {}) {
     if (updating) {
       for (const oldId of Object.keys(previousState.files ?? {})) {
         if (filesState[oldId]) continue
-        await fsp.rm(join(dir, 'files', oldId), { recursive: true, force: true })
+        await fsp.rm(join(dir, 'files', previousFolders.get(String(oldId)) ?? safeName(oldId)), {
+          recursive: true,
+          force: true,
+        })
       }
     }
 
@@ -673,6 +807,34 @@ export function apply(ctx, config = {}) {
       pinned: workspaceDoc.pinned.length,
     }
     await fsp.writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2))
+    // The plugin list travels as its own file: it is informational only, and an
+    // unreadable profile must never block the export. Users can leave it out or
+    // narrow it down, because the list itself says which tools they run.
+    let pluginsWritten = 0
+    try {
+      if (options.includePlugins !== false) {
+        const profilePlugins = await readProfilePlugins(home)
+        if (profilePlugins) {
+          const keep = Array.isArray(options.pluginNames) ? new Set(options.pluginNames.map(String)) : null
+          // Local links point at this machine's paths: they cannot travel, and
+          // the export page shows them greyed out to say exactly that.
+          const plugins = profilePlugins.plugins.filter(
+            (plugin) => plugin.type !== 'link' && (!keep || keep.has(plugin.name)),
+          )
+          await fsp.writeFile(
+            join(dir, 'plugins.json'),
+            JSON.stringify(
+              { version: 1, exportedAt: new Date().toISOString(), profile: profilePlugins.profile, profiles: profilePlugins.profiles, plugins },
+              null,
+              2,
+            ),
+          )
+          pluginsWritten = plugins.length
+        }
+      }
+    } catch {
+      /* plugin inventory is a convenience */
+    }
     await fsp.writeFile(
       join(dir, 'state.json'),
       JSON.stringify({ version: 1, createdAt: new Date().toISOString(), sessions: sessionState, files: filesState }),
@@ -685,6 +847,7 @@ export function apply(ctx, config = {}) {
       sessions: manifestSessions.length,
       sessionsReused,
       workspaces: workspaceDoc.workspaces.length,
+      plugins: pluginsWritten,
       bytes: totalBytes,
       sessionBytes: bytes,
       filesBytes,
@@ -843,6 +1006,37 @@ export function apply(ctx, config = {}) {
     return { refs: refs.size, missing: missingIds.length, missingIds: missingIds.slice(0, 20) }
   }
 
+  /** Count the plugins recorded in a bundle; 0 when there is no list. */
+  async function countBundlePlugins(dir) {
+    try {
+      const doc = JSON.parse(await fsp.readFile(join(dir, 'plugins.json'), 'utf8'))
+      return Array.isArray(doc.plugins) ? doc.plugins.length : 0
+    } catch {
+      return 0
+    }
+  }
+
+  /**
+   * The Workspace that hosts plugin-install conversations. Plugins are machine
+   * setup, not project work, so they get their own place instead of landing in
+   * whichever project the user happened to be looking at.
+   */
+  async function setupWorkspace() {
+    const home = dshHome()
+    const dir = join(home, 'plugin-setup')
+    const title = '插件安装'
+    const existing = ctx.workspaceRegistry.list().find((workspace) => normalKey(workspace.path) === normalKey(dir))
+    if (existing) return { id: String(existing.id), path: existing.path, title: existing.title, created: false }
+    await fsp.mkdir(dir, { recursive: true })
+    const entity = await ctx.workspaceRegistry.create(dir, title)
+    try {
+      await entity.setTitle(title)
+    } catch {
+      /* the created title is good enough */
+    }
+    return { id: String(entity.id), path: dir, title, created: true }
+  }
+
   async function auditBundle(bundlePath) {
     if (!bundlePath) throw new Error('缺少迁移包路径')
     const dir = resolve(String(bundlePath))
@@ -873,6 +1067,7 @@ export function apply(ctx, config = {}) {
       }
     }
     const attachmentsInBundle = await pathExists(join(dir, 'attachments'))
+    const pluginsInBundle = await countBundlePlugins(dir)
     return {
       path: dir,
       sessions: (manifest.sessions ?? []).length,
@@ -881,6 +1076,7 @@ export function apply(ctx, config = {}) {
       attachmentService: Boolean(ctx.get('attachments')),
       totalRefs,
       totalMissing,
+      plugins: pluginsInBundle,
       problems,
       advice:
         totalMissing === 0
@@ -1120,7 +1316,7 @@ export function apply(ctx, config = {}) {
 
     if (options.includeFiles) {
       for (const entry of created) {
-        const source = join(dir, 'files', safeName(entry.source.id))
+        const source = join(dir, 'files', entry.source?.folder ? String(entry.source.folder) : safeName(entry.source.id))
         if (!(await pathExists(source))) continue
         try {
           const items = await fsp.readdir(entry.target)
@@ -1250,6 +1446,10 @@ export function apply(ctx, config = {}) {
       }
       if (req.method === 'POST' && route === '/cleanup') {
         sendJson(res, 200, await cleanupWorkspaces(await readJson(req)))
+        return
+      }
+      if (req.method === 'POST' && route === '/setup-workspace') {
+        sendJson(res, 200, await setupWorkspace())
         return
       }
       sendJson(res, 404, { error: '未知接口' })
