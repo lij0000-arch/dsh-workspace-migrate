@@ -1,5 +1,5 @@
 import { promises as fsp } from 'node:fs'
-import { join, resolve, basename, dirname } from 'node:path'
+import { join, resolve, basename, dirname, relative, isAbsolute } from 'node:path'
 import { homedir, hostname, platform } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -250,34 +250,153 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /** Where the last import's created ids are remembered, so undo survives a reload. */
+  function lastImportPath(home) {
+    return join(home, 'migrations', 'last-import.json')
+  }
+
+  async function readLastImport() {
+    try {
+      const record = JSON.parse(await fsp.readFile(lastImportPath(dshHome()), 'utf8'))
+      if (!record || record.undone === true) return null
+      return record
+    } catch {
+      return null
+    }
+  }
+
+  async function writeLastImport(record) {
+    try {
+      await fsp.mkdir(join(dshHome(), 'migrations'), { recursive: true })
+      await fsp.writeFile(lastImportPath(dshHome()), JSON.stringify(record, null, 2))
+    } catch {
+      /* remembering is a convenience, never a reason to fail an import */
+    }
+  }
+
+  /**
+   * Check whether the last import can still be undone safely. Continuing a chat
+   * in an imported Session adds events, and deleting that Session would throw
+   * those away, so any growth flips the record to unsafe.
+   */
+  async function probeLastImport() {
+    const record = await readLastImport()
+    if (!record) return null
+    const counts = record.counts && typeof record.counts === 'object' ? record.counts : {}
+    const changed = []
+    const missing = []
+    for (const [id, recorded] of Object.entries(counts)) {
+      try {
+        const handle = await ctx.sessionPersistence.open(id, 'read')
+        try {
+          const { events } = await handle.read()
+          const current = Array.isArray(events) ? events.length : 0
+          if (current > recorded) changed.push({ id, recorded, current })
+        } finally {
+          await handle.close()
+        }
+      } catch {
+        missing.push(id)
+      }
+    }
+    return {
+      ...record,
+      changed,
+      missing,
+      safe: changed.length === 0,
+    }
+  }
+  async function clearLastImport() {
+    try {
+      await fsp.rm(lastImportPath(dshHome()), { force: true })
+    } catch {
+      /* nothing to clear */
+    }
+  }
+  /** Where bundles exported outside the default folder are remembered. */
+  function recentBundlesPath(home) {
+    return join(home, 'migrations', 'recent-bundles.json')
+  }
+
+  /** Recently exported bundle paths that still exist; missing ones are pruned. */
+  async function readRecentBundlePaths() {
+    const home = dshHome()
+    let stored = []
+    try {
+      const raw = JSON.parse(await fsp.readFile(recentBundlesPath(home), 'utf8'))
+      stored = Array.isArray(raw) ? raw.map(String) : []
+    } catch {
+      return []
+    }
+    const alive = []
+    for (const path of stored) {
+      if (await pathExists(join(path, 'manifest.json'))) alive.push(path)
+    }
+    if (alive.length !== stored.length) {
+      try {
+        await fsp.mkdir(join(home, 'migrations'), { recursive: true })
+        await fsp.writeFile(recentBundlesPath(home), JSON.stringify(alive, null, 2))
+      } catch {
+        /* pruning is best effort */
+      }
+    }
+    return alive
+  }
+
+  async function rememberBundle(path) {
+    try {
+      const home = dshHome()
+      const previous = await readRecentBundlePaths()
+      const next = [path, ...previous.filter((item) => item !== path)].slice(0, 8)
+      await fsp.mkdir(join(home, 'migrations'), { recursive: true })
+      await fsp.writeFile(recentBundlesPath(home), JSON.stringify(next, null, 2))
+    } catch {
+      /* remembering is a convenience */
+    }
+  }
+
+  async function bundleSummary(path) {
+    try {
+      const manifest = JSON.parse(await fsp.readFile(join(path, 'manifest.json'), 'utf8'))
+      if (manifest.kind !== BUNDLE_KIND) return null
+      return {
+        path,
+        name: basename(path),
+        createdAt: manifest.createdAt ?? null,
+        formatVersion: manifest.formatVersion ?? null,
+        workspaces: Array.isArray(manifest.workspaces) ? manifest.workspaces.length : 0,
+        sessions: Array.isArray(manifest.sessions) ? manifest.sessions.length : 0,
+        sourceHost: manifest.source?.host ?? null,
+        bytes: manifest.bytes ?? null,
+      }
+    } catch {
+      return null
+    }
+  }
+
   async function listBundles() {
     const root = join(dshHome(), 'migrations')
     const bundles = []
-    let entries
+    const seen = new Set()
+    let entries = []
     try {
       entries = await fsp.readdir(root, { withFileTypes: true })
     } catch {
-      return bundles
+      entries = []
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
-      const path = join(root, entry.name)
-      try {
-        const manifest = JSON.parse(await fsp.readFile(join(path, 'manifest.json'), 'utf8'))
-        if (manifest.kind !== BUNDLE_KIND) continue
-        bundles.push({
-          path,
-          name: entry.name,
-          createdAt: manifest.createdAt ?? null,
-          formatVersion: manifest.formatVersion ?? null,
-          workspaces: Array.isArray(manifest.workspaces) ? manifest.workspaces.length : 0,
-          sessions: Array.isArray(manifest.sessions) ? manifest.sessions.length : 0,
-          sourceHost: manifest.source?.host ?? null,
-          bytes: manifest.bytes ?? null,
-        })
-      } catch {
-        continue
-      }
+      const summary = await bundleSummary(join(root, entry.name))
+      if (!summary) continue
+      seen.add(summary.path)
+      bundles.push(summary)
+    }
+    for (const path of await readRecentBundlePaths()) {
+      if (seen.has(path)) continue
+      const summary = await bundleSummary(path)
+      if (!summary) continue
+      seen.add(path)
+      bundles.push(summary)
     }
     bundles.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
     return bundles
@@ -330,6 +449,7 @@ export function apply(ctx, config = {}) {
       bundles: await listBundles(),
       excludes: [...excludes],
       plugins,
+      lastImport: await readLastImport(),
     }
   }
 
@@ -512,7 +632,9 @@ export function apply(ctx, config = {}) {
       // separated per project inside files/.
       const requested = Array.isArray(options.workspaceIds) ? options.workspaceIds.map(String) : []
       let label = 'dsh-migration'
-      if (requested.length === 1) {
+      if (options.onlyPlugins) {
+        label = 'dsh-plugins'
+      } else if (requested.length === 1) {
         const only = ctx.workspaceRegistry.list().find((workspace) => String(workspace.id) === requested[0])
         if (only) label = safeSegment(only.title || basename(only.path), 'workspace').slice(0, 40)
       }
@@ -535,8 +657,13 @@ export function apply(ctx, config = {}) {
     const allWorkspaces = ctx.workspaceRegistry.list()
     // An update keeps the bundle's own workspace set: re-selecting everything
     // would silently pull unrelated projects into a bundle meant for a subset.
-    const selected =
-      Array.isArray(options.workspaceIds) && options.workspaceIds.length > 0
+    // An explicit "plugins only" export keeps the bundle free of sessions even
+    // though the client sent an empty workspace list. An array is always an
+    // explicit choice — only a missing list means "the caller did not choose".
+    const hasExplicitSelection = Array.isArray(options.workspaceIds)
+    const selected = options.onlyPlugins
+      ? []
+      : hasExplicitSelection
         ? allWorkspaces.filter((workspace) => options.workspaceIds.includes(String(workspace.id)))
         : updating && bundleWorkspaceIds
           ? allWorkspaces.filter((workspace) => bundleWorkspaceIds.includes(String(workspace.id)))
@@ -572,12 +699,21 @@ export function apply(ctx, config = {}) {
     const manifestSessions = []
     const includedIds = new Set()
     const sessionState = {}
+    const attachmentRefs = new Map()
     let bytes = 0
     let sessionsReused = 0
+    let subagentSkipped = 0
 
     const zstd = await loadZstd()
     for (const id of ordered) {
       const snapshot = snapshotById.get(id)
+      // Subagent transcripts are internal: DSH hides them on the source machine,
+      // and importing them only produces a wall of untitled child sessions.
+      if (snapshot?.header?.origin === 'subagent') {
+        subagentSkipped += 1
+        task.done += 1
+        continue
+      }
       const previous = previousState?.sessions?.[id]
       // Reuse only when the source log itself is unchanged: compare the
       // backend's own size/event count, never the packaged artifact size.
@@ -603,6 +739,11 @@ export function apply(ctx, config = {}) {
       const handle = await ctx.sessionPersistence.open(id, 'read')
       try {
         const { events } = await handle.read()
+        // Remember which attachment objects this session actually uses, so the
+        // bundle carries those files and not the whole attachments store.
+        for (const event of events ?? []) {
+          if (event && event.data) collectAttachments(event.data, attachmentRefs)
+        }
         const document = {
           header: handle.header,
           inheritedEventCount: handle.inheritedEventCount,
@@ -622,6 +763,7 @@ export function apply(ctx, config = {}) {
           cwd: handle.header.cwd ?? null,
           parent: handle.header.parentSession ? String(handle.header.parentSession) : null,
           seeded: Boolean(handle.header.isSeeded),
+          origin: handle.header.origin ?? null,
           inherited: handle.inheritedEventCount ?? 0,
           events: Array.isArray(events) ? events.length : 0,
         }
@@ -762,9 +904,46 @@ export function apply(ctx, config = {}) {
     }
 
     let attachmentsBytes = 0
+    let attachmentsCopied = 0
     const attachmentsRoot = join(home, 'attachments')
     if (options.includeAttachments && (await pathExists(attachmentsRoot))) {
-      await fsp.cp(attachmentsRoot, join(dir, 'attachments'), { recursive: true, force: true })
+      const service = ctx.get('attachments')
+      const wanted = []
+      for (const ref of attachmentRefs.values()) {
+        let hostPath = null
+        try {
+          if (service && typeof ref.mediaType === 'string' && typeof service.imageHostPath === 'function') {
+            hostPath = service.imageHostPath(ref)
+          } else if (service && typeof service.fileHostPath === 'function') {
+            hostPath = service.fileHostPath(ref)
+          }
+        } catch {
+          hostPath = null
+        }
+        if (typeof hostPath !== 'string' || hostPath.length === 0) continue
+        const rel = relative(attachmentsRoot, hostPath)
+        if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue
+        wanted.push(rel)
+      }
+      if (wanted.length > 0) {
+        // Copy only the objects these sessions reference: the store is shared by
+        // every session on the machine, so a full copy would drag in everything.
+        for (const rel of wanted) {
+          const source = join(attachmentsRoot, rel)
+          const target = join(dir, 'attachments', rel)
+          try {
+            await fsp.mkdir(dirname(target), { recursive: true })
+            await fsp.copyFile(source, target)
+            attachmentsCopied += 1
+          } catch {
+            /* a ref the host cannot resolve is reported by the pre-import check */
+          }
+        }
+      } else if (!service && attachmentRefs.size === 0) {
+        // No attachment service to resolve paths: keep the old whole-store copy
+        // rather than silently shipping a bundle without images.
+        await fsp.cp(attachmentsRoot, join(dir, 'attachments'), { recursive: true, force: true })
+      }
       attachmentsBytes = await dirSize(join(dir, 'attachments'))
     }
 
@@ -841,15 +1020,18 @@ export function apply(ctx, config = {}) {
     )
     task.done += 1
 
+    await rememberBundle(dir)
     return {
       path: dir,
       mode: updating ? 'update' : 'full',
       sessions: manifestSessions.length,
       sessionsReused,
+      subagents: subagentSkipped,
       workspaces: workspaceDoc.workspaces.length,
       plugins: pluginsWritten,
       bytes: totalBytes,
       sessionBytes: bytes,
+      attachments: attachmentsCopied,
       filesBytes,
       attachmentsBytes,
       filesCopied,
@@ -918,12 +1100,76 @@ export function apply(ctx, config = {}) {
     return removed
   }
 
+  /**
+   * Move Session logs into a dated trash folder instead of deleting them. Same
+   * volume, so the rename is atomic, holds no lock, and stays reversible: the
+   * Host offers no deletion API and its documented stance is "archive, never
+   * delete".
+   */
+  async function trashSessionDirs(home, ids) {
+    const root = join(home, 'sessions')
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const trashDir = join(home, 'trash', `undo-import-${stamp}`)
+    const entries = []
+    let projects = []
+    try {
+      projects = await fsp.readdir(root, { withFileTypes: true })
+    } catch {
+      projects = []
+    }
+    let created = false
+    for (const id of ids) {
+      for (const project of projects) {
+        if (!project.isDirectory()) continue
+        const source = join(root, project.name, id)
+        if (!(await pathExists(source))) continue
+        if (!created) {
+          await fsp.mkdir(trashDir, { recursive: true })
+          created = true
+        }
+        const target = join(trashDir, `${id}__${project.name}`)
+        try {
+          await fsp.rename(source, target)
+          entries.push({ id, from: source, to: target, restored: false })
+        } catch (error) {
+          entries.push({ id, from: source, error: error instanceof Error ? error.message : String(error) })
+        }
+      }
+    }
+    if (created) {
+      try {
+        await fsp.writeFile(
+          join(trashDir, 'MANIFEST.json'),
+          JSON.stringify({ kind: 'undo-import', createdAt: new Date().toISOString(), entries }, null, 2),
+        )
+      } catch {
+        /* the manifest is a convenience */
+      }
+    }
+    return { trashDir: created ? trashDir : null, entries }
+  }
   async function rollback(payload) {
-    const workspaceIds = Array.isArray(payload.workspaceIds) ? payload.workspaceIds.map(String) : []
-    const sessionIds = Array.isArray(payload.sessionIds) ? payload.sessionIds.map(String) : []
+    const remembered = payload && payload.useLast === true ? await readLastImport() : null
+    if (payload && payload.useLast === true && !remembered) {
+      return { workspaces: [], sessions: [], error: '没有可撤销的导入记录' }
+    }
+    const workspaceIds = remembered
+      ? (remembered.workspaces || []).map(String)
+      : Array.isArray(payload.workspaceIds)
+        ? payload.workspaceIds.map(String)
+        : []
+    const sessionIds = remembered
+      ? (remembered.sessions || []).map(String)
+      : Array.isArray(payload.sessionIds)
+        ? payload.sessionIds.map(String)
+        : []
+    // Ids from the persisted record were written by this plugin's own import, so
+    // they stay eligible after a reload; ad-hoc ids still need the memory guard.
+    const trustedWorkspaces = new Set(remembered ? workspaceIds : [])
+    const trustedSessions = new Set(remembered ? sessionIds : [])
     const result = { workspaces: [], sessions: [] }
     for (const id of workspaceIds) {
-      if (!createdWorkspaces.has(id)) {
+      if (!createdWorkspaces.has(id) && !trustedWorkspaces.has(id)) {
         result.workspaces.push({ id, refused: '不是本次运行创建的项目，已拒绝删除' })
         continue
       }
@@ -933,18 +1179,24 @@ export function apply(ctx, config = {}) {
         result.workspaces.push({ id, error: error instanceof Error ? error.message : String(error) })
       }
     }
-    const root = join(dshHome(), 'sessions')
+    // Sessions are moved to a dated trash folder, never deleted: the Host has no
+    // deletion API and documents "archive, never delete" as the stance.
+    const movable = []
     for (const id of sessionIds) {
-      if (!createdSessions.has(id)) {
-        result.sessions.push({ id, refused: '不是本次运行导入的会话，已拒绝删除' })
+      if (!createdSessions.has(id) && !trustedSessions.has(id)) {
+        result.sessions.push({ id, refused: '不是本次运行导入的会话，已拒绝处理' })
         continue
       }
-      try {
-        result.sessions.push({ id, removed: await removeSessionDirs(root, id) })
-      } catch (error) {
-        result.sessions.push({ id, error: error instanceof Error ? error.message : String(error) })
-      }
+      movable.push(id)
     }
+    const trashed = await trashSessionDirs(dshHome(), movable)
+    result.trashDir = trashed.trashDir
+    for (const entry of trashed.entries) {
+      result.sessions.push(entry.error
+        ? { id: entry.id, error: entry.error }
+        : { id: entry.id, removed: true, movedTo: entry.to })
+    }
+    if (remembered) await clearLastImport()
     return result
   }
 
@@ -1006,6 +1258,76 @@ export function apply(ctx, config = {}) {
     return { refs: refs.size, missing: missingIds.length, missingIds: missingIds.slice(0, 20) }
   }
 
+  /** Render a session timestamp (seconds or milliseconds) as a local date. */
+  function formatStamp(value) {
+    const num = Number(value)
+    if (!Number.isFinite(num) || num <= 0) return ''
+    const date = new Date(num > 1e12 ? num : num * 1000)
+    if (Number.isNaN(date.getTime())) return ''
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  }
+  /** Readable name for a session: DSH records one as a `session/title` event. */
+  function sessionTitle(document) {
+    const events = document.events ?? []
+    for (const event of events) {
+      const title = event && event.type === 'session/title' && event.data ? event.data.title : null
+      if (typeof title === 'string' && title.trim().length > 0) return title.trim()
+    }
+    for (const event of events) {
+      if (!event || event.type !== 'user/message' || !event.data) continue
+      const text = typeof event.data.text === 'string' ? event.data.text : ''
+      if (text.trim().length > 0) return text.trim().slice(0, 40)
+    }
+    return null
+  }
+
+  /** Seq-valued fields that must follow a renumbered event forward. */
+  const SEQ_REF_KEYS = new Set(['throughSeq', 'headerSeq', 'messageSeqs', 'shadowedSeqs'])
+
+  /** Shift seq references at or after `threshold` by one, so a fork marker fits. */
+  function shiftSeqRefs(value, threshold, delta = 1, key = null) {
+    if (Array.isArray(value)) return value.map((item) => shiftSeqRefs(item, threshold, delta, key))
+    if (value && typeof value === 'object') {
+      const out = {}
+      for (const [childKey, child] of Object.entries(value)) out[childKey] = shiftSeqRefs(child, threshold, delta, childKey)
+      return out
+    }
+    if (typeof value === 'number' && key !== null && SEQ_REF_KEYS.has(key) && value >= threshold) return value + delta
+    return value
+  }
+
+  /**
+   * Compare a local log with the bundled one by walking their common prefix.
+   * identical  same content
+   * packAhead  local is a strict prefix, so the bundle only adds
+   * localAhead the bundle is a strict prefix, so this machine is newer
+   * diverged   both changed, so neither side is safe to drop automatically
+   */
+  function compareEvents(local, pack) {
+    const a = Array.isArray(local) ? local : []
+    const b = Array.isArray(pack) ? pack : []
+    const min = Math.min(a.length, b.length)
+    let index = 0
+    while (index < min) {
+      if (JSON.stringify(a[index]) !== JSON.stringify(b[index])) return 'diverged'
+      index += 1
+    }
+    if (a.length === b.length) return 'identical'
+    return index === a.length ? 'packAhead' : 'localAhead'
+  }
+
+  /** Load one locally stored session so it can be compared with the bundle. */
+  async function readLocalSession(id) {
+    const handle = await ctx.sessionPersistence.open(id, 'read')
+    try {
+      const { events } = await handle.read()
+      return { events }
+    } finally {
+      await handle.close()
+    }
+  }
+
   /** Count the plugins recorded in a bundle; 0 when there is no list. */
   async function countBundlePlugins(dir) {
     try {
@@ -1045,6 +1367,13 @@ export function apply(ctx, config = {}) {
     let totalRefs = 0
     let totalMissing = 0
     let scanned = 0
+    const comparisons = []
+    let localIds = new Set()
+    try {
+      localIds = new Set((await ctx.sessionPersistence.list()).map((snapshot) => String(snapshot.header.id)))
+    } catch {
+      localIds = new Set()
+    }
     for (const meta of manifest.sessions ?? []) {
       let document
       try {
@@ -1056,15 +1385,37 @@ export function apply(ctx, config = {}) {
       const result = auditDocument(document)
       totalRefs += result.refs
       totalMissing += result.missing
+      const id = String(meta.id)
+      const stamp = formatStamp(meta.createdAt ?? document.header?.createdAt)
+      const title = sessionTitle(document) ?? (stamp ? `未命名会话 · ${stamp}` : '未命名会话')
       if (result.missing > 0) {
         problems.push({
-          id: String(meta.id),
+          id,
+          title,
           cwd: meta.cwd ?? null,
           refs: result.refs,
           missing: result.missing,
           missingIds: result.missingIds,
         })
       }
+      // Same-name sessions decide what a re-import would do, so compare them now.
+      const entry = {
+        id,
+        title,
+        packEvents: Array.isArray(document.events) ? document.events.length : 0,
+        localEvents: null,
+        verdict: 'new',
+      }
+      if (localIds.has(id)) {
+        try {
+          const local = await readLocalSession(id)
+          entry.localEvents = Array.isArray(local.events) ? local.events.length : 0
+          entry.verdict = compareEvents(local.events, document.events)
+        } catch {
+          entry.verdict = 'unreadable'
+        }
+      }
+      comparisons.push(entry)
     }
     const attachmentsInBundle = await pathExists(join(dir, 'attachments'))
     const pluginsInBundle = await countBundlePlugins(dir)
@@ -1077,6 +1428,7 @@ export function apply(ctx, config = {}) {
       totalRefs,
       totalMissing,
       plugins: pluginsInBundle,
+      comparisons,
       problems,
       advice:
         totalMissing === 0
@@ -1135,6 +1487,12 @@ export function apply(ctx, config = {}) {
     }
     pairs.sort((a, b) => normalKey(b.from).length - normalKey(a.from).length)
 
+    const decisions =
+      options.sessionDecisions && typeof options.sessionDecisions === 'object' ? options.sessionDecisions : {}
+
+    const newWorkspaceIds = []
+    const newSessionIds = []
+    const sessionCounts = {}
     const report = {
       path: dir,
       rootDir,
@@ -1142,6 +1500,10 @@ export function apply(ctx, config = {}) {
       sessionsImported: 0,
       importedSessions: [],
       sessionsSkipped: [],
+      sessionsAppended: [],
+      sessionsForked: [],
+      sessionsCopied: [],
+      subagentSkipped: 0,
       flattened: 0,
       ungrouped: 0,
       rewritten: 0,
@@ -1180,6 +1542,7 @@ export function apply(ctx, config = {}) {
         }
         created.push({ source: entry.source, entity, target: entry.target })
         if (!preExisting.has(String(entity.id))) createdWorkspaces.add(String(entity.id))
+        if (!preExisting.has(String(entity.id))) newWorkspaceIds.push(String(entity.id))
         report.workspaces.push({ id: String(entity.id), path: entry.target, title: entity.title, from: entry.source.path })
       } catch (error) {
         report.warnings.push(
@@ -1204,14 +1567,233 @@ export function apply(ctx, config = {}) {
     const attached = new Set()
 
     for (const meta of manifest.sessions ?? []) {
-      const id = String(meta.id)
-      if (existing.has(id)) {
-        report.sessionsSkipped.push({ id, reason: '本机已存在同名会话' })
+      const sourceId = String(meta.id)
+      // Subagent transcripts belong to the machinery, not the user's list: an
+      // import that flattened them into normal Sessions produced untitled rows
+      // that also failed to load, so skip them outright.
+      if (meta.origin === 'subagent') {
+        report.subagentSkipped += 1
+        task.done += 1
+        continue
+      }
+      let id = sourceId
+      if (existing.has(sourceId)) {
+        const choice = String(decisions[sourceId] ?? 'skip')
+        if (choice === 'append') {
+          // The bundle only adds events, so extend the local log in place.
+          try {
+            const local = await readLocalSession(sourceId)
+            const packDocument = await loadSessionDocument(dir, meta)
+            const packEvents = Array.isArray(packDocument.events) ? packDocument.events : []
+            const localCount = Array.isArray(local.events) ? local.events.length : 0
+            if (packEvents.length > localCount) {
+              const handle = await ctx.sessionPersistence.open(sourceId, 'write')
+              try {
+                await handle.append(packEvents.slice(localCount))
+                await handle.flush()
+              } finally {
+                await handle.close()
+              }
+              report.sessionsAppended.push({ id: sourceId, added: packEvents.length - localCount })
+            } else {
+              report.sessionsSkipped.push({ id: sourceId, reason: '包内没有更多内容' })
+            }
+          } catch (error) {
+            report.warnings.push(
+              `追加更新失败：${sourceId}（${error instanceof Error ? error.message : String(error)}）`,
+            )
+          }
+          task.done += 1
+          continue
+        }
+        if (choice === 'fork') {
+          // A fork keeps both sides: the shared prefix is copied verbatim from
+          // this machine, then the bundle's branch continues after the marker.
+          try {
+            const local = await readLocalSession(sourceId)
+            const packDocument = await loadSessionDocument(dir, meta)
+            const localEvents = Array.isArray(local.events) ? local.events : []
+            const packEvents = Array.isArray(packDocument.events) ? packDocument.events : []
+            let prefix = 0
+            const min = Math.min(localEvents.length, packEvents.length)
+            while (prefix < min && JSON.stringify(localEvents[prefix]) === JSON.stringify(packEvents[prefix])) {
+              prefix += 1
+            }
+            if (prefix === 0) throw new Error('两边没有共同前缀，无法分叉')
+            const forkId = `session-${randomUUID()}`
+            // The Host only exempts events before the inherited cut from the
+            // "delivery marker names the right session" rule, so the tail must
+            // own the new id while the inherited prefix keeps the parent's.
+            let tailEvents = packEvents.slice(prefix).map((event) => JSON.parse(JSON.stringify(event)))
+            if (sourceId !== forkId) {
+              tailEvents = JSON.parse(JSON.stringify(tailEvents).split(sourceId).join(forkId))
+            }
+            // Give the branch a title; DSH puts its title event right after the
+            // fork marker, and an unnamed child is hard to pick out in the list.
+            const packTitle = sessionTitle(packDocument) || sessionTitle(local)
+            const titleTemplate = packEvents.find((event) => event && event.type === 'session/title')
+            const titleEvent = titleTemplate && packTitle
+              ? (() => {
+                  const clone = JSON.parse(JSON.stringify(titleTemplate))
+                  clone.data = { ...(clone.data || {}), title: `${packTitle}（分叉）` }
+                  return clone
+                })()
+              : null
+            const delta = titleEvent ? 2 : 1
+            const tail = tailEvents.map((event, index) => {
+              const clone = event
+              clone.seq = prefix + delta + index
+              if (clone.data !== undefined) clone.data = shiftSeqRefs(clone.data, prefix, delta)
+              return clone
+            })
+            if (titleEvent) titleEvent.seq = prefix + 1
+            if (options.rewritePaths !== false && pairs.length > 0) {
+              const stats = { count: 0 }
+              for (const event of tail) {
+                if (event && event.data && typeof event.data === 'object') {
+                  event.data = rewritePaths(event.data, pairs, stats)
+                }
+              }
+              report.rewritten += stats.count
+            }
+            const marker = { type: 'session/end-seed', seq: prefix, time: Date.now(), data: { inherited: true } }
+            const header = { ...packDocument.header }
+            // Undefined keys would survive as own properties and then vanish in
+            // JSON, which the Host rejects as "not losslessly serializable".
+            delete header.origin
+            header.id = forkId
+            header.parentSession = sourceId
+            header.isSeeded = true
+            header.delegationDepth = 0
+            if (typeof localVersion === 'number') header.version = localVersion
+            for (const key of Object.keys(header)) {
+              if (header[key] === undefined) delete header[key]
+            }
+            if (header.cwd && pairs.length > 0 && typeof header.cwd === 'string') {
+              header.cwd = mapPath(header.cwd, pairs)
+            }
+            // A seeded header is only valid together with the exact inherited
+            // prefix length, which the Host validates at create time.
+            const handle = await ctx.sessionPersistence.create(header, { inheritedEventCount: prefix })
+            // What the Host actually kept decides whether this can be a fork at
+            // all: a seeded header without its parent cannot pass the delivery
+            // marker rule, so report that instead of writing a broken log.
+            const kept = handle.header ?? {}
+            if (kept.parentSession !== sourceId || kept.isSeeded !== true) {
+              try {
+                await handle.close()
+              } catch {
+                /* nothing was written yet */
+              }
+              throw new Error(
+                `Host 未保留分叉头（parentSession=${kept.parentSession ?? '缺失'}, isSeeded=${kept.isSeeded ?? '缺失'}）`,
+              )
+            }
+            try {
+              const branch = [...localEvents.slice(0, prefix), marker]
+              if (titleEvent) branch.push(titleEvent)
+              branch.push(...tail)
+              await handle.append(branch)
+              await handle.flush()
+            } finally {
+              await handle.close()
+            }
+            // Read it back immediately: a fork the Host refuses to open is worse
+            // than no fork, so refuse to leave one behind.
+            try {
+              const probe = await ctx.sessionPersistence.open(forkId, 'read')
+              try {
+                await probe.read()
+              } finally {
+                await probe.close()
+              }
+            } catch (error) {
+              try {
+                await removeSessionDirs(home, forkId)
+              } catch {
+                /* removal is the fallback; the warning below still reports it */
+              }
+              throw new Error(`写入后自检未通过，已删除该分叉：${error instanceof Error ? error.message : String(error)}`)
+            }
+            report.sessionsForked.push({ id: forkId, from: sourceId, prefix, tail: tail.length })
+            sessionCounts[forkId] = prefix + (titleEvent ? 1 : 0) + tail.length + 1
+            newSessionIds.push(forkId)
+            const match = created.find((entry) => normalKey(header.cwd ?? '') === normalKey(entry.target))
+            if (match) {
+              try {
+                await match.entity.attachSession(forkId)
+              } catch {
+                /* attachment to a workspace is best effort */
+              }
+            }
+          } catch (error) {
+            // Forking needs Host support the build may lack: fall back to a plain
+            // copy so the branch content still arrives, clearly marked as a copy.
+            const reason = error instanceof Error ? error.message : String(error)
+            try {
+              const packDocument = await loadSessionDocument(dir, meta)
+              const copyId = `session-${randomUUID()}`
+              const copyHeader = { ...packDocument.header, id: copyId, isSeeded: false, delegationDepth: 0 }
+              delete copyHeader.origin
+              delete copyHeader.parentSession
+              if (typeof localVersion === 'number') copyHeader.version = localVersion
+              for (const key of Object.keys(copyHeader)) {
+                if (copyHeader[key] === undefined) delete copyHeader[key]
+              }
+              if (copyHeader.cwd && pairs.length > 0 && typeof copyHeader.cwd === 'string') {
+                copyHeader.cwd = mapPath(copyHeader.cwd, pairs)
+              }
+              const packEvents = Array.isArray(packDocument.events) ? packDocument.events : []
+              let copyEvents = JSON.parse(JSON.stringify(packEvents).split(sourceId).join(copyId))
+              if (options.rewritePaths !== false && pairs.length > 0) {
+                const stats = { count: 0 }
+                for (const event of copyEvents) {
+                  if (event && event.data && typeof event.data === 'object') {
+                    event.data = rewritePaths(event.data, pairs, stats)
+                  }
+                }
+                report.rewritten += stats.count
+              }
+              const copyHandle = await ctx.sessionPersistence.create(copyHeader)
+              try {
+                if (copyEvents.length > 0) await copyHandle.append(copyEvents)
+                await copyHandle.flush()
+              } finally {
+                await copyHandle.close()
+              }
+              report.sessionsCopied.push({ id: copyId, from: sourceId, reason })
+              sessionCounts[copyId] = copyEvents.length
+              newSessionIds.push(copyId)
+              const target = created.find((entry) => normalKey(copyHeader.cwd ?? '') === normalKey(entry.target))
+              if (target) {
+                try {
+                  await target.entity.attachSession(copyId)
+                } catch {
+                  /* attachment to a workspace is best effort */
+                }
+              }
+            } catch (copyError) {
+              report.warnings.push(
+                `导入同名会话失败：${sourceId}（分叉：${reason}；副本：${copyError instanceof Error ? copyError.message : String(copyError)}）`,
+              )
+            }
+          }
+          task.done += 1
+          continue
+        }
+        report.sessionsSkipped.push({ id: sourceId, reason: '本机已存在同名会话' })
         task.done += 1
         continue
       }
       try {
         const document = await loadSessionDocument(dir, meta)
+        // Older bundles do not record `origin` in the manifest, so the document
+        // itself is the only place left to spot a subagent transcript.
+        if (document.header && document.header.origin === 'subagent') {
+          report.subagentSkipped += 1
+          task.done += 1
+          continue
+        }
         if (!willInstallAttachments) {
           const audit = auditDocument(document)
           if (audit.missing > 0) {
@@ -1276,6 +1858,8 @@ export function apply(ctx, config = {}) {
         }
         existing.add(id)
         createdSessions.add(id)
+        newSessionIds.push(id)
+        sessionCounts[id] = events.length
         report.sessionsImported += 1
         report.importedSessions.push(id)
 
@@ -1341,6 +1925,13 @@ export function apply(ctx, config = {}) {
       }
     }
 
+    await writeLastImport({
+      at: new Date().toISOString(),
+      bundle: dir,
+      workspaces: newWorkspaceIds,
+      sessions: newSessionIds,
+      counts: sessionCounts,
+    })
     task.done += 1
     return report
   }
@@ -1422,6 +2013,10 @@ export function apply(ctx, config = {}) {
         sendJson(res, 200, await auditBundle(url.searchParams.get('path')))
         return
       }
+      if (req.method === 'GET' && route === '/last-import') {
+        sendJson(res, 200, { lastImport: await probeLastImport() })
+        return
+      }
       if (req.method === 'GET' && route === '/task') {
         sendJson(res, 200, taskView(url.searchParams.get('id')))
         return
@@ -1447,8 +2042,7 @@ export function apply(ctx, config = {}) {
       if (req.method === 'POST' && route === '/cleanup') {
         sendJson(res, 200, await cleanupWorkspaces(await readJson(req)))
         return
-      }
-      if (req.method === 'POST' && route === '/setup-workspace') {
+      }      if (req.method === 'POST' && route === '/setup-workspace') {
         sendJson(res, 200, await setupWorkspace())
         return
       }
@@ -1457,7 +2051,6 @@ export function apply(ctx, config = {}) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
     }
   }
-
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }))
   ctx.effect(() => () => {
     tasks.clear()
