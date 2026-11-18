@@ -7,11 +7,13 @@
 [![stars](https://img.shields.io/github/stars/lij0000-arch/dsh-workspace-migrate)](https://github.com/lij0000-arch/dsh-workspace-migrate)
 [![license](https://img.shields.io/github/license/lij0000-arch/dsh-workspace-migrate)](LICENSE)
 
-换电脑，把 DeepSeek Harness 里的**项目、对话和文件**一起带走，而且搬过去的旧对话还能接着聊。
+换电脑，把 DeepSeek Harness 里的**项目、对话、文件和插件清单**一起带走，而且搬过去的旧对话还能接着聊。
 
-> 已被 [awesome-dsh-plugin](https://awesome-dsh-plugin.com/zh/p/lij0000-arch/dsh-workspace-migrate/) 收录 · npm 周下载 700+ · 适配 DSH 0.2.2（含 rc 预发布）
+> 已被 [awesome-dsh-plugin](https://awesome-dsh-plugin.com/zh/p/lij0000-arch/dsh-workspace-migrate/) 收录 · npm 周下载 1,000+ · 适配 DSH 0.2.2（含 rc 预发布）
 
-> ⚠️ **请安装 0.5.3 及以上**。0.5.2 及更早版本的本地接口只做了同源检查，缺少宿主身份认证；0.5.3 起每个请求都过 `ctx.connection` 凭据校验，无认证服务时直接返回 503。
+> ⚠️ **安全下限 0.5.3**：0.5.2 及更早版本的本地接口只做了同源检查，缺少宿主身份认证；0.5.3 起每个请求都过 `ctx.connection` 凭据校验，无认证服务时直接返回 503。
+>
+> 📦 **推荐 0.7.0 及以上**：两边都有新消息时用**分叉会话**合并、常驻「撤销上一次导入」、自动跳过子代理会话。
 
 **和别的迁移工具不一样的四点：**
 
@@ -48,7 +50,7 @@ dsh plugin --profile desktop add dsh-workspace-migrate
 
 - **读**：`~/.dsh/sessions`（会话事件流）、`~/.dsh/storages/workspace.json`（项目登记、置顶/归档集合）、`~/.dsh/attachments`、以及所选项目目录
 - **写**：经公开服务新建会话与项目登记（`sessionPersistence` / `workspaceRegistry`）、按路径映射复制项目文件与附件
-- **删**：只有「撤销这次导入」会删，而且只删**本次进程内由本插件创建**的项目登记与会话目录，其它 id 一律拒绝
+- **删**：不删任何东西。撤销导入只会移除**那次导入新建**的项目登记，并把会话移到 `~/.dsh/trash/`（可恢复），其它 id 一律拒绝
 - **网络**：不向外发起请求；仅在本机 `127.0.0.1` 注册 `/api/dsh-migrate` 供当前页面调用
 - **鉴权**：每个请求都经宿主 `ctx.connection.requestRejection()` 校验浏览器签名凭据，被拒返回 401/403；宿主没有该服务时**直接返回 503**，不回退到 Origin/Host 比较（请求头可以伪造，不能当身份凭据）
 - **凭据**：不读取、不导出 `~/.dsh/.credentials.yaml`
@@ -64,6 +66,8 @@ dsh plugin --profile desktop add dsh-workspace-migrate
 包里的项目文件按 `files/<项目名>-<日期>/` 分目录存放，不用打开 JSON 也能看出哪个文件夹是哪个项目。
 
 不带项目文件时只打包对话；带项目文件时按目录排除 `node_modules`、`.git`、`.venv`、`__pycache__` 等可重建目录。
+
+附件**只打包所选会话真正引用到的那些**：`~/.dsh/attachments` 是全机共享的，一条会话可能只用到其中几张图，整目录照搬会把几百 MB 无关文件塞进包里。
 
 ## 增量同步（0.2.0+）
 
@@ -96,11 +100,35 @@ dsh plugin --profile desktop add dsh-workspace-migrate
 
 导入通过 Harness 的公开服务（`sessionPersistence` / `workspaceRegistry`）重建，不是覆盖文件，所以：
 
-- 已有同名会话会跳过，不会覆盖
+- 同名会话按「导入前体检」给的结论各自处理，见下一节
 - fork 出来的会话会把父会话前缀展开成独立会话
+- **子代理会话自动跳过**：它们是机器内部记录，DSH 本来就不显示，带过来只会变成一堆打不开的「未命名」
 - 归档/置顶状态会尽量恢复
-- 导入错了可以用「撤销这次导入」按本次报告里的 id 回滚
+- 导入错了可以「撤销上一次导入」，见下文
 - 报告里的「未归属项目的会话」表示该会话的 cwd 不落在任何项目目录，检查一下路径映射即可
+
+## 同名会话：追加、分叉还是跳过（0.7.0+）
+
+两边都有同一个会话时，导入前体检会逐条给出结论，你只需要决定「怎么做」：
+
+| 结论 | 含义 | 可选项 |
+|---|---|---|
+| 完全一致 | 逐条事件相同 | 跳过 |
+| 包内更新 | 本机是包里内容的前缀 | **追加**（只把新事件接到本机日志尾部）/ 跳过 |
+| 本机更新 | 包里是本机内容的前缀 | 跳过（本机更全） |
+| 两边都有新增 | 共同前缀之后各自长出了不同内容 | **作为分叉** / 跳过 |
+
+「作为分叉」是把共同前缀原样留在本机会话里，把包里那条分支接成**官方分叉会话**：header 带 `parentSession` 与 `isSeeded`，日志里有 `session/end-seed` 标记，侧栏里挂在原会话下面。两条路都保留，谁都不丢。
+
+实现上做了三件容易被漏掉的事：把分叉点之后事件的 `seq` 整体后移并同步 `throughSeq` / `messageSeqs` 等引用；把尾部事件里的会话自引用换成新 id（否则读日志会报 `delivery marker names the wrong Session`）；`create()` 时必须传 `inheritedEventCount`。写入后会立刻回读一遍，读不出来就删掉该分叉并如实报告。
+
+## 撤销上一次导入（0.7.0+）
+
+导入成功后，导入页底部会常驻一张「上一次导入」卡片，记录写在 `~/.dsh/migrations/last-import.json`，关掉设置再打开、重启 DSH 都还在。
+
+- 只处理**那次导入新建**的项目登记与会话，复用的已有项目不动
+- 会话不是删除，而是移到 `~/.dsh/trash/undo-import-<时间>/`（同卷 `rename`，带 `MANIFEST.json`），可以手工恢复
+- **导入后只要在某些会话里继续聊过，按钮就变灰禁用**：撤销会丢掉那些新内容，所以宁可不给按
 
 ## 插件清单与安装会话（0.6.0+）
 
