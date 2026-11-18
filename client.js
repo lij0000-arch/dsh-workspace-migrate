@@ -22,7 +22,56 @@ window.__ModuleLoader__.load({
       filesHint: '排除 node_modules、.git 等可重建目录。',
       attachments: '同时打包图片附件',
       outDir: '导出位置',
-      outDirHint: '留空则用 ~/.dsh/migrations。',
+      outDirHint: '留空则用 {path}。',
+        browse: '浏览…',
+        changePath: '修改路径',
+        resetPath: '恢复默认',
+        newPath: '新路径',
+        pluginsExport: '同时记录已装插件清单',
+        pluginsExportHint: '只记录插件名、版本和来源，不含插件内容；新电脑上不会自动安装。',
+        linkNotExported: '本地链接插件不随包导出；迁移会话后可在对话里安装。',
+        installSection: '在新电脑上安装这些插件',
+        installSectionHint: '不会自动安装。勾选后点下面的按钮，会新建一个对话并填好提示词，你确认后再发送。',
+        installNone: '先勾选要安装的插件',
+        createInstallSession: '一键创建安装会话',
+        installPromptProfile: '请装到 profile',
+        installPromptIntro: '请帮我在本机安装下面这些 DSH 插件，它们来自一个迁移包的插件清单：',
+        installPromptRules: '要求：\n- 逐条执行，先确认包存在、版本一致（例如 npm view <包名> version）\n- 只装我列出的这些，不要额外安装别的东西\n- 任何一条失败就停下来告诉我原因，不要跳过、不要换版本\n- 全部装完后确认插件已启用，并告诉我需要重启 DSH 才能生效\n- 本地链接（link:）插件依赖旧电脑的路径，无法迁移，不在清单里',
+        disabled: '不可选',
+        pluginsTitle: '插件清单（来源电脑）',
+        pluginsHint: '仅作参考，不会自动安装。复制命令到新电脑执行。',
+        pluginsEmpty: '这个包没有记录插件清单',
+        pluginsOnlyHint: '没有勾选工作区：将只导出插件清单。',
+        attachmentsCount: '个附件',
+        pluginsCount: '个插件',
+        undoLastTitle: '上一次导入',
+        undoLastHint: '记录的是最近一次导入新建的项目与会话。撤销会移除项目登记，并把会话移入回收目录（可恢复），不动已有数据。',
+        undoLastDo: '撤销上一次导入',
+        undoLastConfirm: '将移除 {w} 个项目登记，并把 {s} 个会话移入回收目录 ~/.dsh/trash（可手动恢复）。项目文件夹里的文件不动。继续？',
+        undoLastDone: '已撤销',
+        undoLastTrash: '已移入',
+        undoLastNone: '没有可撤销的导入记录',
+        undoLastRefused: '部分条目被拒绝',
+        undoLastBlocked: '导入后有 {n} 个会话又聊过，撤销会丢掉新内容，已禁用',
+        sessionsDiff: '同名会话比对',
+        choiceAppend: '更新（只追加）',
+        choiceFork: '作为分叉',
+        choiceSkip: '跳过',
+        sessionsDiffMore: '还有 {n} 个未显示',
+        verdictNew: '本机没有，将导入',
+        verdictIdentical: '与本机一致，将跳过',
+        verdictPackAhead: '包内多 {n} 条，可更新',
+        verdictLocalAhead: '本机多 {n} 条，包里更旧',
+        verdictDiverged: '两边都有新增（本机 {local} / 包 {pack}）',
+        verdictUnreadable: '本机会话读取失败',
+        pluginsProfile: 'profile',
+        copyCommand: '复制命令',
+        copied: '已复制',
+        typeOfficial: '官方',
+        typeNpm: 'npm',
+        typeLink: '本地链接',
+        typeGit: 'Git',
+        typeTarball: '压缩包',
       startExport: '开始导出',
       exportRunning: '正在导出…',
       exportDone: '导出完成',
@@ -44,6 +93,11 @@ window.__ModuleLoader__.load({
       startImport: '开始导入',
       importRunning: '正在导入…',
       importDone: '导入完成',
+      reportAppended: '追加更新',
+      reportForked: '作为分叉合并',
+      reportCopied: '作为副本导入（分叉不可用）',
+        subagentsSkipped: '个子代理会话未导出（内部记录）',
+      eventsCount: '条事件',
       importFailed: '导入失败',
       report: '结果',
       imported: '已导入会话',
@@ -61,7 +115,7 @@ window.__ModuleLoader__.load({
       copied: '复制文件',
       unchanged: '未变',
       removed: '已删除',
-      importRoot: '导入到（新根目录）',
+      importRoot: '导入到（新工作路径）',
       importRootHint: '每个项目会自动建一个以项目名命名的子文件夹；下面每一行仍可单独改。',
       rewritePaths: '重写对话里提到的旧路径',
       rewritePathsHint: '工具调用与结果中的旧绝对路径会换成新路径，续聊时模型才找得到文件。',
@@ -95,7 +149,56 @@ window.__ModuleLoader__.load({
       filesHint: 'Skips rebuildable directories such as node_modules and .git.',
       attachments: 'Include image attachments',
       outDir: 'Export location',
-      outDirHint: 'Empty uses ~/.dsh/migrations.',
+      outDirHint: 'Empty uses {path}.',
+        browse: 'Browse…',
+        changePath: 'Change path',
+        resetPath: 'Reset',
+        newPath: 'New path',
+        pluginsExport: 'Include the installed-plugin list',
+        pluginsExportHint: 'Names, versions and sources only — no plugin content, and nothing is installed on the new machine.',
+        linkNotExported: 'Local-link plugins are not exported; install them from a conversation after migrating.',
+        installSection: 'Install these plugins on this machine',
+        installSectionHint: 'Nothing is installed automatically. Pick what you need, press the button, and a new conversation opens with the prompt filled in — you still send it.',
+        installNone: 'Select at least one plugin first',
+        createInstallSession: 'Create install conversation',
+        installPromptProfile: 'Install into profile',
+        installPromptIntro: 'Please install these DSH plugins on this machine. They come from a migration bundle plugin list:',
+        installPromptRules: 'Rules:\n- Work through them one at a time and verify each package exists at the exact version first (for example npm view <name> version)\n- Install only the packages listed here, nothing else\n- Stop and tell me the reason if any of them fails; do not skip and do not substitute versions\n- When everything is installed, confirm the plugins are enabled and tell me DSH has to restart\n- Local-link (link:) plugins point at paths on the old machine and cannot be migrated, so they are not listed',
+        disabled: 'unavailable',
+        pluginsTitle: 'Plugins on the source machine',
+        pluginsHint: 'Reference only — nothing is installed. Copy the command on the new machine.',
+        pluginsEmpty: 'This bundle has no plugin list',
+        pluginsOnlyHint: 'No workspace selected: the bundle will contain only the plugin list.',
+        attachmentsCount: 'attachments',
+        pluginsCount: 'plugins',
+        undoLastTitle: 'Last import',
+        undoLastHint: 'Records the Workspaces and Sessions the most recent import created. Undo drops the Workspace registrations and moves the Sessions into a trash folder you can restore from.',
+        undoLastDo: 'Undo last import',
+        undoLastConfirm: 'This deletes {w} Workspace registrations and {s} Sessions created by that import. Files inside the project folders stay untouched. Continue?',
+        undoLastDone: 'Undone',
+        undoLastTrash: 'moved to',
+        undoLastNone: 'Nothing to undo',
+        undoLastRefused: 'some entries were refused',
+        undoLastBlocked: '{n} imported sessions were continued after the import; undo would discard that, so it is disabled',
+        sessionsDiff: 'Same-name sessions',
+        choiceAppend: 'update (append only)',
+        choiceFork: 'merge as fork',
+        choiceSkip: 'skip',
+        sessionsDiffMore: '{n} more not shown',
+        verdictNew: 'new here, will import',
+        verdictIdentical: 'same as local, will skip',
+        verdictPackAhead: 'bundle has {n} more, can update',
+        verdictLocalAhead: 'local has {n} more, bundle is older',
+        verdictDiverged: 'both changed (local {local} / bundle {pack})',
+        verdictUnreadable: 'local session unreadable',
+        pluginsProfile: 'profile',
+        copyCommand: 'Copy command',
+        copied: 'Copied',
+        typeOfficial: 'official',
+        typeNpm: 'npm',
+        typeLink: 'local link',
+        typeGit: 'git',
+        typeTarball: 'tarball',
       startExport: 'Start export',
       exportRunning: 'Exporting…',
       exportDone: 'Export finished',
@@ -117,6 +220,11 @@ window.__ModuleLoader__.load({
       startImport: 'Start import',
       importRunning: 'Importing…',
       importDone: 'Import finished',
+      reportAppended: 'Updated in place',
+      reportForked: 'Merged as forks',
+      reportCopied: 'Imported as copies (fork unavailable)',
+        subagentsSkipped: 'subagent transcripts skipped',
+      eventsCount: 'events',
       importFailed: 'Import failed',
       report: 'Result',
       imported: 'Sessions imported',
@@ -134,7 +242,7 @@ window.__ModuleLoader__.load({
       copied: 'files copied',
       unchanged: 'unchanged',
       removed: 'removed',
-      importRoot: 'Import into (new root)',
+      importRoot: 'Import into (new path)',
       importRootHint: 'Each project gets a subfolder named after it; every row below can still be edited.',
       rewritePaths: 'Rewrite old paths mentioned in conversations',
       rewritePathsHint: 'Absolute paths inside tool calls and results are replaced with the new ones, so a resumed conversation finds its files.',
@@ -163,9 +271,9 @@ window.__ModuleLoader__.load({
       tab: {
         appearance: 'none', border: 'none', background: 'transparent', cursor: 'pointer',
         padding: '9px 12px', fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-secondary)',
-        borderBottom: '2px solid transparent', marginBottom: -1,
+        borderBottom: 'none', marginBottom: -1, boxShadow: 'inset 0 -2px 0 0 transparent',
       },
-      tabActive: { color: 'var(--dsw-alias-label-primary)', borderBottomColor: 'var(--dsw-alias-brand-primary)' },
+      tabActive: { color: 'var(--dsw-alias-label-primary)', boxShadow: 'inset 0 -2px 0 0 var(--dsw-alias-brand-primary)' },
       card: {
         border: '1px solid var(--dsw-alias-border-l1)', background: 'var(--dsw-alias-bg-layer-1)',
         borderRadius: 10, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12,
@@ -208,6 +316,10 @@ window.__ModuleLoader__.load({
         padding: '8px 16px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
       },
       primaryOff: { opacity: 0.5, cursor: 'default' },
+      linkButton: {
+        appearance: 'none', border: 'none', background: 'none', padding: '2px 4px',
+        color: 'var(--dsw-alias-label-secondary)', fontSize: 12, cursor: 'pointer', textDecoration: 'underline',
+      },
       label: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' },
       bar: { height: 4, borderRadius: 999, background: 'var(--dsw-alias-bg-layer-2)', overflow: 'hidden' },
       barFill: { height: '100%', background: 'var(--dsw-alias-brand-primary)', transition: 'width .25s ease' },
@@ -237,6 +349,25 @@ window.__ModuleLoader__.load({
       if (Number.isNaN(date.getTime())) return String(value)
       const pad = (n) => String(n).padStart(2, '0')
       return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+    }
+
+    /** Platform-flavoured default migrations directory, for hints only. */
+    function migrationsLabel(inventory) {
+      const dir = inventory && inventory.migrationsDir ? String(inventory.migrationsDir) : ''
+      const posix = dir.length > 0 ? dir.includes('/') && !dir.includes('\\') : false
+      return posix ? '~/.dsh/migrations' : '%USERPROFILE%\\.dsh\\migrations'
+    }
+
+    /** Mirror the host's per-project target rule for previews. */
+    function joinTarget(root, title, sep) {
+      const cleaned = String(title || 'workspace')
+        .replace(/[\\/:*?"<>|\x00-\x1f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/[. ]+$/g, '')
+        .slice(0, 80)
+      const base = root.replace(/[\\/]+$/, '')
+      return `${base}${sep}${cleaned.length > 0 ? cleaned : 'workspace'}`
     }
 
     async function request(path, options) {
@@ -306,7 +437,8 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-          h('div', { style: C.ok }, `${t('exportDone')} · ${result.sessions} ${t('sessions')} · ${fmtBytes(result.bytes)}`),
+          h('div', { style: C.ok }, `${t('exportDone')} · ${result.sessions} ${t('sessions')} · ${fmtBytes(result.bytes)}${result.attachments > 0 ? ` · ${result.attachments} ${t('attachmentsCount')}` : ''}${result.plugins > 0 ? ` · ${result.plugins} ${t('pluginsCount')}` : ''}`),
+          result.subagents > 0 ? h('div', { style: C.hint }, `${result.subagents} ${t('subagentsSkipped')}`) : null,
           result.mode === 'update'
             ? h(
                 'div',
@@ -314,7 +446,7 @@ window.__ModuleLoader__.load({
                 `${t('reused')} ${result.sessionsReused} · ${t('copied')} ${result.filesCopied} (${fmtBytes(result.bytesCopied)}) · ${t('unchanged')} ${result.filesUnchanged} · ${t('removed')} ${result.filesRemoved}`,
               )
             : null,
-          h('div', { style: C.mono }, result.path),
+          h('div', { style: C.mono, title: result.path }, result.path),
           (result.warnings || []).length > 0
             ? h(
                 'div',
@@ -328,6 +460,22 @@ window.__ModuleLoader__.load({
         'div',
         { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
         h('div', { style: C.ok }, `${t('importDone')} · ${t('imported')} ${result.sessionsImported} · ${t('skipped')} ${result.sessionsSkipped.length}`),
+        (result.sessionsAppended || []).length > 0
+          ? h(
+              'div',
+              { style: C.ok },
+              `${t('reportAppended')}: ${result.sessionsAppended.length}（+${result.sessionsAppended.reduce((sum, item) => sum + (item.added || 0), 0)} ${t('eventsCount')}）`,
+            )
+          : null,
+        (result.sessionsForked || []).length > 0
+          ? h('div', { style: C.ok }, `${t('reportForked')}: ${result.sessionsForked.length}`)
+          : null,
+        (result.sessionsCopied || []).length > 0
+          ? h('div', { style: C.warn }, `${t('reportCopied')}: ${result.sessionsCopied.length}`)
+          : null,
+        result.subagentSkipped > 0
+          ? h('div', { style: C.hint }, `· ${result.subagentSkipped} ${t('subagentsSkipped')}`)
+          : null,
         result.flattened > 0 ? h('div', { style: C.hint }, `${t('flattened')}: ${result.flattened}`) : null,
         result.rewritten > 0 ? h('div', { style: C.hint }, `${t('rewrittenPaths')}: ${result.rewritten}`) : null,
         result.missingAttachments > 0
@@ -405,10 +553,12 @@ window.__ModuleLoader__.load({
     }
 
     function ExportPane(props) {
-      const { t, inventory, reload } = props
+      const { t, inventory, reload, pick, canPick } = props
       const [selected, setSelected] = useState(null)
       const [includeFiles, setIncludeFiles] = useState(true)
       const [includeAttachments, setIncludeAttachments] = useState(true)
+      const [includePlugins, setIncludePlugins] = useState(false)
+      const [pluginSelected, setPluginSelected] = useState(null)
       const [outDir, setOutDir] = useState('')
       const [updateTarget, setUpdateTarget] = useState('')
       const [cleanupNote, setCleanupNote] = useState(null)
@@ -417,10 +567,17 @@ window.__ModuleLoader__.load({
       const workspaces = inventory ? inventory.workspaces : []
       const bundles = inventory && inventory.bundles ? inventory.bundles : []
       const active = selected === null ? new Set(workspaces.map((workspace) => workspace.id)) : selected
+      const pluginList = inventory && inventory.plugins && Array.isArray(inventory.plugins.plugins) ? inventory.plugins.plugins : []
+      // Sessions/files, or just the plugin list: both are a valid export.
+      const exportablePlugins = pluginList.filter(
+        (plugin) => plugin.type !== 'link' && (pluginSelected === null || pluginSelected.has(plugin.name)),
+      ).length
+      const noWorkspaces = active.size === 0
+      const canExport = active.size > 0 || (includePlugins && exportablePlugins > 0)
 
       useEffect(() => {
-        if (!updateTarget && bundles.length > 0) setUpdateTarget(bundles[0].path)
-      }, [bundles, updateTarget])
+        if (task && task.phase === 'done') reload()
+      }, [task])
 
       const toggle = (id) => {
         const next = new Set(active)
@@ -486,19 +643,102 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: C.card },
-          h('label', { style: C.label }, h(Checkbox, { checked: includeFiles, onChange: setIncludeFiles }), t('files')),
-          h('div', { style: C.hint }, t('filesHint')),
-          h('label', { style: C.label }, h(Checkbox, { checked: includeAttachments, onChange: setIncludeAttachments }), t('attachments')),
+          h(
+            'label',
+            {
+              style: {
+                ...C.label,
+                opacity: noWorkspaces ? 0.45 : 1,
+                cursor: noWorkspaces ? 'default' : 'pointer',
+              },
+            },
+            h(Checkbox, { checked: includeFiles && !noWorkspaces, disabled: noWorkspaces, onChange: setIncludeFiles }),
+            t('files'),
+          ),
+          h('div', { style: { ...C.hint, opacity: noWorkspaces ? 0.45 : 1 } }, t('filesHint')),
+          h(
+            'label',
+            {
+              style: {
+                ...C.label,
+                opacity: noWorkspaces ? 0.45 : 1,
+                cursor: noWorkspaces ? 'default' : 'pointer',
+              },
+            },
+            h(Checkbox, { checked: includeAttachments && !noWorkspaces, disabled: noWorkspaces, onChange: setIncludeAttachments }),
+            t('attachments'),
+          ),
+          h('label', { style: C.label }, h(Checkbox, { checked: includePlugins, onChange: setIncludePlugins }), t('pluginsExport')),
+          h('div', { style: C.hint }, t('pluginsExportHint')),
+          includePlugins && pluginList.length > 0
+            ? h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 2, padding: '2px 0 6px 22px' } },
+                ...pluginList.map((plugin) => {
+                  // Local links point at the old machine's paths, so they cannot
+                  // travel; showing them greyed out explains what is missing.
+                  const locked = plugin.type === 'link'
+                  const active = !locked && (pluginSelected === null || pluginSelected.has(plugin.name))
+                  return h(
+                    'div',
+                    { key: plugin.name, style: { display: 'flex', flexDirection: 'column', gap: 1 } },
+                    h(
+                      'label',
+                      {
+                        style: {
+                          ...C.label,
+                          fontWeight: 400,
+                          cursor: locked ? 'default' : 'pointer',
+                          opacity: locked ? 0.5 : 1,
+                        },
+                      },
+                      h(Checkbox, {
+                        checked: active,
+                        disabled: locked,
+                        onChange: () => {
+                          const next = new Set(
+                            pluginSelected === null
+                              ? pluginList.filter((item) => item.type !== 'link').map((item) => item.name)
+                              : pluginSelected,
+                          )
+                          if (next.has(plugin.name)) next.delete(plugin.name)
+                          else next.add(plugin.name)
+                          setPluginSelected(next)
+                        },
+                      }),
+                      h('span', { style: C.mono }, plugin.name),
+                      h('span', { style: { ...C.hint, marginLeft: 6, padding: 0 } }, pluginTypeLabel(t, plugin.type)),
+                      locked ? h('span', { style: { ...C.hint, marginLeft: 6, padding: 0 } }, t('disabled')) : null,
+                    ),
+                  )
+                }),
+                pluginList.some((plugin) => plugin.type === 'link')
+                  ? h('div', { style: { ...C.hint, paddingLeft: 22, fontSize: 11.5 } }, t('linkNotExported'))
+                  : null,
+              )
+            : null,
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
             h('div', { style: C.hint }, t('outDir')),
-            h('input', {
-              style: C.input,
-              value: outDir,
-              placeholder: inventory ? inventory.migrationsDir : '',
-              onChange: (event) => setOutDir(event.target.value),
-              spellCheck: false,
-            }),
-            h('div', { style: C.hint }, t('outDirHint')),
+            h('div', { style: { display: 'flex', gap: 8 } },
+              h('input', {
+                style: { ...C.input, flex: 1 },
+                title: outDir || (inventory ? inventory.migrationsDir : ''),
+                value: outDir,
+                placeholder: inventory ? inventory.migrationsDir : '',
+                onChange: (event) => setOutDir(event.target.value),
+                spellCheck: false,
+              }),
+              canPick
+                ? h('button', {
+                    style: C.button,
+                    onClick: async () => {
+                      const dir = await pick()
+                      if (dir) setOutDir(dir)
+                    },
+                  }, t('browse'))
+                : null,
+            ),
+            h('div', { style: C.hint }, t('outDirHint').replace('{path}', migrationsLabel(inventory))),
           ),
           h(
             'div',
@@ -506,29 +746,45 @@ window.__ModuleLoader__.load({
             h(
               'button',
               {
-                style: running || active.size === 0 ? { ...C.primary, ...C.primaryOff } : C.primary,
-                disabled: running || active.size === 0,
+                style: running || !canExport ? { ...C.primary, ...C.primaryOff } : C.primary,
+                disabled: running || !canExport,
                 onClick: () =>
                   run('export', {
                     workspaceIds: [...active],
-                    includeFiles,
-                    includeAttachments,
+                    // An empty selection is a real choice here: export the plugin
+                    // list alone instead of silently falling back to everything.
+                    onlyPlugins: active.size === 0,
+                    includeFiles: includeFiles && active.size > 0,
+                    includeAttachments: includeAttachments && active.size > 0,
                     outDir: outDir.trim() || null,
+                    includePlugins,
+                    pluginNames: pluginSelected === null ? null : [...pluginSelected],
                   }),
               },
               running ? t('exportRunning') : t('startExport'),
             ),
-          ),
-          bundles.length > 0
-            ? h(
+            active.size === 0 && includePlugins && exportablePlugins > 0
+              ? h('span', { style: C.hint }, t('pluginsOnlyHint'))
+              : null,
+        ),
+          h(Progress, { task }),
+          h(TaskResult, { t, task, kind: 'export' }),
+        ),
+        task && task.phase === 'done' && task.result
+          ? h('button', { style: C.button, onClick: reload }, '刷新列表')
+          : null,
+        h(
+          'div',
+          { style: C.card },
+          h(
                 'div',
                 {
                   style: {
                     display: 'flex',
                     flexDirection: 'column',
                     gap: 7,
-                    borderTop: '1px solid var(--dsw-alias-border-l1)',
-                    paddingTop: 11,
+
+
                   },
                 },
                 h('div', { style: C.cardTitle }, t('update')),
@@ -536,27 +792,31 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-                  bundles.length > 0
+                  h('input', {
+                    style: { ...C.input, flex: 1 },
+                    title: updateTarget,
+                    value: updateTarget,
+                    placeholder: 'D:\\path\\to\\dsh-migration-…',
+                    onChange: (event) => setUpdateTarget(event.target.value),
+                    spellCheck: false,
+                  }),
+                  canPick
                     ? h(
-                        'select',
+                        'button',
                         {
-                          style: { ...C.input, flex: 1 },
-                          value: updateTarget,
-                          onChange: (event) => setUpdateTarget(event.target.value),
+                          style: C.button,
+                          onClick: async () => {
+                            const dir = await pick()
+                            if (dir) setUpdateTarget(dir)
+                          },
                         },
-                        ...bundles.map((bundle) =>
-                          h(
-                            'option',
-                            { key: bundle.path, value: bundle.path },
-                            `${bundle.name} · ${bundle.sessions} ${t('sessions')}`,
-                          ),
-                        ),
+                        t('browse'),
                       )
                     : null,
                   h(
                     'button',
                     {
-                      style: running ? { ...C.button, ...C.primaryOff } : C.button,
+                      style: running || !updateTarget ? { ...C.button, ...C.primaryOff } : C.button,
                       disabled: running || !updateTarget,
                       onClick: () =>
                         run('export', {
@@ -569,41 +829,133 @@ window.__ModuleLoader__.load({
                     t('updateNow'),
                   ),
                 ),
-                h('input', {
-                  style: C.input,
-                  value: updateTarget,
-                  placeholder: 'D:\\path\\to\\dsh-migration-…',
-                  onChange: (event) => setUpdateTarget(event.target.value),
-                  spellCheck: false,
-                }),
-              )
-            : null,
-          h(Progress, { task }),
-          h(TaskResult, { t, task, kind: 'export' }),
+              ),
         ),
-        task && task.phase === 'done' && task.result
-          ? h('button', { style: C.button, onClick: reload }, '刷新列表')
-          : null,
       )
     }
 
+    /** One line per same-name Session: what a re-import would do with it. */
+    function verdictView(t, entry) {
+      const local = entry.localEvents
+      const pack = entry.packEvents
+      switch (entry.verdict) {
+        case 'identical':
+          return { label: t('verdictIdentical'), style: C.hint }
+        case 'packAhead':
+          return { label: t('verdictPackAhead').replace('{n}', String(pack - local)), style: C.ok }
+        case 'localAhead':
+          return { label: t('verdictLocalAhead').replace('{n}', String(local - pack)), style: C.hint }
+        case 'diverged':
+          return { label: t('verdictDiverged').replace('{local}', String(local)).replace('{pack}', String(pack)), style: C.error }
+        case 'unreadable':
+          return { label: t('verdictUnreadable'), style: C.warn }
+        default:
+          return { label: t('verdictNew'), style: C.hint }
+      }
+    }
+    function pluginTypeLabel(t, type) {
+      const keys = { official: 'typeOfficial', npm: 'typeNpm', link: 'typeLink', git: 'typeGit', tarball: 'typeTarball' }
+      return t(keys[type] || 'typeNpm')
+    }
+
+    /**
+     * A DSH plugin can only be installed into a profile, so the command must say
+     * which one: a bare `dsh plugin add` may land in another profile than the one
+     * this bundle came from.
+     */
+    function installCommand(plugin, profile) {
+      if (plugin.type === 'official') return ''
+      const target = profile ? ` --profile ${profile}` : ''
+      if (plugin.type === 'npm') {
+        const version = String(plugin.spec || '').replace(/^[\^~]/, '')
+        return `dsh plugin${target} add ${version ? `${plugin.name}@${version}` : plugin.name}`
+      }
+      return `dsh plugin${target} add ${plugin.spec}`
+    }
+
+    function installablePlugins(plugins) {
+      return (plugins || []).filter((plugin) => plugin.type === 'npm' || plugin.type === 'git' || plugin.type === 'tarball')
+    }
+
+    /**
+     * Build the prompt for a fresh Session. The plugin never installs anything:
+     * it hands the list to the agent, which shows every command it runs.
+     */
+    function buildInstallPrompt(t, bundleLabel, profile, plugins) {
+      const lines = plugins.map((plugin, index) => `${index + 1}. ${plugin.name} ${plugin.spec}\n   ${installCommand(plugin, profile)}`)
+      return [
+        `${t('installPromptIntro')}${bundleLabel ? `（${bundleLabel}）` : ''}`,
+        '',
+        ...lines,
+        '',
+        profile ? `${t('installPromptProfile')}：${profile}` : '',
+        t('installPromptRules'),
+      ].join('\n')
+    }
+
+    function CopyButton(props) {
+      const { t, text } = props
+      const [done, setDone] = useState(false)
+      return h(
+        'button',
+        {
+          style: C.linkButton,
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(text)
+              setDone(true)
+              setTimeout(() => setDone(false), 1600)
+            } catch {
+              /* clipboard may be blocked; the command stays selectable on screen */
+            }
+          },
+        },
+        done ? t('copied') : t('copyCommand'),
+      )
+    }
+
+    const IMPORT_STATE_KEY = 'dsh-migrate:import-state'
+
+    function readImportState() {
+      try {
+        const raw = localStorage.getItem(IMPORT_STATE_KEY)
+        return raw ? JSON.parse(raw) : null
+      } catch {
+        return null
+      }
+    }
+
+    function writeImportState(state) {
+      try {
+        localStorage.setItem(IMPORT_STATE_KEY, JSON.stringify(state))
+      } catch {
+        /* storage is a convenience; losing it only means retyping the path */
+      }
+    }
+
     function ImportPane(props) {
-      const { t, inventory, reload } = props
+      const { t, inventory, reload, pick, canPick, startSession, canInstallSession } = props
       const bundles = inventory ? inventory.bundles : []
-      const [bundlePath, setBundlePath] = useState('')
+      // Creating the install Session navigates away and unmounts this pane, so
+      // the bundle path and the per-project mapping survive in localStorage.
+      const restored = readImportState()
+      const [bundlePath, setBundlePath] = useState(restored && restored.bundlePath ? restored.bundlePath : '')
       const [preview, setPreview] = useState(null)
-      const [remap, setRemap] = useState({})
+      const [remap, setRemap] = useState(restored && restored.remap ? restored.remap : {})
       const [includeFiles, setIncludeFiles] = useState(true)
       const [includeAttachments, setIncludeAttachments] = useState(true)
       const [overwriteFiles, setOverwriteFiles] = useState(false)
-      const [rootDir, setRootDir] = useState('')
+      const [rootDir, setRootDir] = useState(restored && restored.rootDir ? restored.rootDir : '')
       const [rewritePaths, setRewritePaths] = useState(true)
       const [check, setCheck] = useState(null)
       const [checking, setChecking] = useState(false)
       const [loadError, setLoadError] = useState(null)
+      const [installSelection, setInstallSelection] = useState(new Set())
+      const [sessionChoices, setSessionChoices] = useState({})
       const [undoNote, setUndoNote] = useState(null)
       const { task, run } = usePolling(t)
       const running = task && task.phase === 'running'
+      const installable = preview ? installablePlugins(preview.plugins && preview.plugins.list) : []
 
       const undo = async (result) => {
         if (!window.confirm(t('undoConfirm'))) return
@@ -650,6 +1002,44 @@ window.__ModuleLoader__.load({
         setRemap(next)
       }
 
+      const [undoLastNote, setUndoLastNote] = useState(null)
+      const [lastImportProbe, setLastImportProbe] = useState(null)
+
+
+      useEffect(() => {
+        let alive = true
+        if (!inventory || !inventory.lastImport) {
+          setLastImportProbe(null)
+          return () => { alive = false }
+        }
+        api
+          .get('/last-import')
+          .then((result) => { if (alive) setLastImportProbe(result && result.lastImport) })
+          .catch(() => { if (alive) setLastImportProbe(null) })
+        return () => { alive = false }
+      }, [inventory && inventory.lastImport && inventory.lastImport.at])
+
+      const undoBlocked = Boolean(lastImportProbe && lastImportProbe.safe === false)
+      const undoLast = async () => {
+        const record = inventory && inventory.lastImport
+        if (!record) return
+        const message = t('undoLastConfirm')
+          .replace('{w}', String((record.workspaces || []).length))
+          .replace('{s}', String((record.sessions || []).length))
+        if (!window.confirm(message)) return
+        try {
+          const result = await api.post('/rollback', { useLast: true })
+          const removed = [...(result.workspaces || []), ...(result.sessions || [])].filter((item) => item.removed).length
+          const refused = [...(result.workspaces || []), ...(result.sessions || [])].filter((item) => item.refused).length
+          const trash = result.trashDir ? ` · ${t('undoLastTrash')} ${result.trashDir}` : ''
+          const refusedNote = refused > 0 ? ` · ${t('undoLastRefused')} ${refused}` : ''
+          setUndoLastNote(`${t('undoLastDone')} ${removed}${refusedNote}${trash}`)
+          reload()
+        } catch (error) {
+          setLoadError(error instanceof Error ? error.message : String(error))
+        }
+      }
+
       const runCheck = async () => {
         if (!bundlePath) return
         setChecking(true)
@@ -670,13 +1060,109 @@ window.__ModuleLoader__.load({
         try {
           const value = await api.get(`/preview?path=${encodeURIComponent(path)}`)
           setPreview(value)
-          const next = {}
-          for (const workspace of value.workspaces || []) next[workspace.path] = workspace.path
-          setRemap(next)
+          // Keep only real overrides: an entry equal to the original path would
+          // read as "override" and pin the target back to the old location.
+          setRemap((previous) => {
+            const next = {}
+            for (const workspace of value.workspaces || []) {
+              const key = workspace.path
+              const kept = previous ? previous[key] : undefined
+              if (typeof kept === 'string' && kept.trim().length > 0 && kept.trim() !== key) next[key] = kept
+            }
+            return next
+          })
         } catch (error) {
           setLoadError(error instanceof Error ? error.message : String(error))
         }
       }
+
+      // Coming back from the install Session: restore the bundle the user had open.
+      useEffect(() => {
+        if (bundlePath) void load(bundlePath)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [])
+
+      useEffect(() => {
+        writeImportState({ bundlePath, remap, rootDir })
+      }, [bundlePath, remap, rootDir])
+
+      const pluginCard = preview && preview.plugins && (preview.plugins.list || []).length > 0
+        ? h(
+            'div',
+            { style: C.card },
+            h(
+              'div',
+              { style: C.cardTitle },
+              preview.plugins.profile
+                ? `${t('pluginsTitle')} · ${preview.plugins.profile}`
+                : t('pluginsTitle'),
+            ),
+            h('div', { style: C.hint }, t('pluginsHint')),
+            ...(preview.plugins.list || []).map((plugin) => {
+              const command = installCommand(plugin, preview.plugins.profile)
+              return h(
+                'div',
+                { key: plugin.name, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' } },
+                h('span', { style: { ...C.mono, flex: 1, wordBreak: 'break-all' } }, `${plugin.name} ${plugin.spec}`),
+                h('span', { style: C.badge }, pluginTypeLabel(t, plugin.type)),
+                command ? h(CopyButton, { t, text: command }) : null,
+              )
+            }),
+            canInstallSession && installable.length > 0
+              ? h(
+                  'div',
+                  { style: { borderTop: '1px solid var(--dsw-alias-border-l1)', marginTop: 8, paddingTop: 8 } },
+                  h('div', { style: C.cardTitle }, t('installSection')),
+                  h('div', { style: C.hint }, t('installSectionHint')),
+                  ...installable.map((plugin) =>
+                    h(
+                      'label',
+                      { key: `install-${plugin.name}`, style: { ...C.label, fontWeight: 400 } },
+                      h(Checkbox, {
+                        checked: installSelection.has(plugin.name),
+                        onChange: () => {
+                          const next = new Set(installSelection)
+                          if (next.has(plugin.name)) next.delete(plugin.name)
+                          else next.add(plugin.name)
+                          setInstallSelection(next)
+                        },
+                      }),
+                      h('span', { style: C.mono }, plugin.name),
+                      h('span', { style: { ...C.hint, marginLeft: 6, padding: 0 } }, plugin.spec),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { style: { display: 'flex', alignItems: 'center', gap: 10, paddingTop: 6 } },
+                    h(
+                      'button',
+                      {
+                        style: installSelection.size === 0 ? { ...C.primary, ...C.primaryOff } : C.primary,
+                        disabled: installSelection.size === 0,
+                        onClick: async () => {
+                          const chosen = installable.filter((plugin) => installSelection.has(plugin.name))
+                          if (chosen.length === 0) return
+                          const label = `${preview.plugins.profile || ''} · ${bundlePath}`
+                          const prompt = buildInstallPrompt(t, label, preview.plugins.profile, chosen)
+                          // Machine setup belongs in its own Workspace, not in a project.
+                          let workspaceId
+                          try {
+                            const target = await api.post('/setup-workspace', {})
+                            workspaceId = target && target.id
+                          } catch {
+                            workspaceId = undefined
+                          }
+                          startSession(workspaceId, { prompt, whenDraftExists: 'append' })
+                        },
+                      },
+                      t('createInstallSession'),
+                    ),
+                    installSelection.size === 0 ? h('span', { style: C.hint }, t('installNone')) : null,
+                  ),
+                )
+              : null,
+          )
+        : null
 
       return h(
         'div',
@@ -706,12 +1192,25 @@ window.__ModuleLoader__.load({
             : h('div', { style: C.hint }, t('noBundles')),
           h('div', { style: { display: 'flex', gap: 8 } },
             h('input', {
-              style: C.input,
+              style: { ...C.input, flex: 1 },
+              title: bundlePath,
               value: bundlePath,
               placeholder: 'D:\\path\\to\\dsh-migration-…',
               onChange: (event) => setBundlePath(event.target.value),
               spellCheck: false,
             }),
+            canPick
+              ? h('button', {
+                  style: C.button,
+                  onClick: async () => {
+                    const dir = await pick()
+                    if (dir) {
+                      setBundlePath(dir)
+                      load(dir)
+                    }
+                  },
+                }, t('browse'))
+              : null,
             h('button', { style: C.button, onClick: () => bundlePath && load(bundlePath) }, t('loadPreview')),
           ),
           h(
@@ -730,17 +1229,84 @@ window.__ModuleLoader__.load({
               ? h(
                   'span',
                   { style: check.totalMissing === 0 ? C.ok : C.warn },
-                  `${check.sessions} ${t('sessions')} · ${check.totalRefs} ${t('refs')} · ${check.totalMissing} ${t('missingRefs')}`,
+                  `${check.sessions} ${t('sessions')} · ${check.totalRefs} ${t('refs')} · ${check.totalMissing} ${t('missingRefs')}${check.plugins > 0 ? ` · ${check.plugins} ${t('pluginsCount')}` : ''}`,
                 )
               : null,
           ),
           check && check.advice ? h('div', { style: C.warn }, `${t('attachmentAdvice')}: ${check.advice}`) : null,
+          check && (check.comparisons || []).length > 0
+            ? h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 6 } },
+                h('div', { style: C.cardTitle }, t('sessionsDiff')),
+                ...(check.comparisons || []).slice(0, 8).map((entry) => {
+                  const view = verdictView(t, entry)
+                  const choice =
+                    entry.verdict === 'packAhead'
+                      ? sessionChoices[entry.id] || 'append'
+                      : entry.verdict === 'diverged'
+                        ? sessionChoices[entry.id] || 'fork'
+                        : 'skip'
+                  const options =
+                    entry.verdict === 'packAhead'
+                      ? [
+                          ['append', t('choiceAppend')],
+                          ['skip', t('choiceSkip')],
+                        ]
+                      : entry.verdict === 'diverged'
+                        ? [
+                            ['fork', t('choiceFork')],
+                            ['skip', t('choiceSkip')],
+                          ]
+                        : []
+                  return h(
+                    'div',
+                    { key: entry.id, style: { display: 'flex', flexDirection: 'column', gap: 2, paddingBottom: 4 } },
+                    h(
+                      'div',
+                      { style: { ...view.style, display: 'flex', gap: 8, alignItems: 'baseline' } },
+                      h('span', { style: { flex: 1, wordBreak: 'break-all' } }, entry.title),
+                      h('span', { style: { opacity: 0.75, whiteSpace: 'nowrap' } }, view.label),
+                    ),
+                    options.length > 0
+                      ? h(
+                          'div',
+                          { style: { display: 'flex', gap: 6, paddingLeft: 2 } },
+                          ...options.map(([value, label]) =>
+                            h(
+                              'button',
+                              {
+                                key: value,
+                                style: {
+                                  ...C.linkButton,
+                                  fontWeight: choice === value ? 600 : 400,
+                                  textDecoration: choice === value ? 'underline' : 'none',
+                                  color:
+                                    value === 'replace' && choice === value
+                                      ? 'var(--dsw-alias-state-error-primary)'
+                                      : 'var(--dsw-alias-label-secondary)',
+                                },
+                                onClick: () =>
+                                  setSessionChoices({ ...sessionChoices, [entry.id]: value }),
+                              },
+                              label,
+                            ),
+                          ),
+                        )
+                      : null,
+                  )
+                }),
+                (check.comparisons || []).length > 8
+                  ? h('div', { style: C.hint }, t('sessionsDiffMore').replace('{n}', String(check.comparisons.length - 8)))
+                  : null,
+              )
+            : null,
           check && check.problems.length > 0
             ? h(
                 'div',
                 { style: { display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 150, overflowY: 'auto' } },
                 ...check.problems.map((problem) =>
-                  h('div', { key: problem.id, style: C.hint }, `• ${problem.id} — ${problem.missing}/${problem.refs}`),
+                  h('div', { key: problem.id, style: C.hint }, `• ${problem.title || problem.id} — ${problem.missing}/${problem.refs}`),
                 ),
               )
             : null,
@@ -768,17 +1334,35 @@ window.__ModuleLoader__.load({
                 'div',
                 { style: { display: 'flex', flexDirection: 'column', gap: 5, padding: '4px 0 10px' } },
                 h('div', { style: C.cardTitle }, t('importRoot')),
-                h('input', {
-                  style: C.input,
-                  value: rootDir,
-                  placeholder: posixTarget ? '/home/<user>/dsh' : 'E:\\DSH',
-                  onChange: (event) => applyRoot(event.target.value),
-                  spellCheck: false,
-                }),
+                h('div', { style: { display: 'flex', gap: 8 } },
+                  h('input', {
+                    style: { ...C.input, flex: 1 },
+                    title: rootDir,
+                    value: rootDir,
+                    placeholder: posixTarget ? '/home/<user>/dsh' : 'E:\\DSH',
+                    onChange: (event) => applyRoot(event.target.value),
+                    spellCheck: false,
+                  }),
+                  canPick
+                    ? h('button', {
+                        style: C.button,
+                        onClick: async () => {
+                          const dir = await pick()
+                          if (dir) applyRoot(dir)
+                        },
+                      }, t('browse'))
+                    : null,
+                ),
                 h('div', { style: C.hint }, t('importRootHint')),
               ),
-              ...(preview.workspaces || []).map((workspace) =>
-                h(
+              ...(preview.workspaces || []).map((workspace) => {
+                const override = remap[workspace.path]
+                const target = override && override.trim()
+                  ? override
+                  : rootDir.trim()
+                    ? joinTarget(rootDir.trim(), workspace.title, posixTarget ? '/' : '\\')
+                    : workspace.path
+                return h(
                   'div',
                   { key: workspace.id, style: { display: 'flex', flexDirection: 'column', gap: 5 } },
                   h(
@@ -787,15 +1371,34 @@ window.__ModuleLoader__.load({
                     h('span', { style: C.rowTitle }, workspace.title),
                     h('span', { style: C.badge }, `${workspace.sessions} ${t('sessionCount')} · ${fmtBytes(workspace.bytes || 0)}`),
                   ),
-                  h('div', { style: C.mono }, `${t('from')}: ${workspace.path}`),
-                  h('input', {
-                    style: C.input,
-                    value: remap[workspace.path] ?? workspace.path,
-                    onChange: (event) => setRemap({ ...remap, [workspace.path]: event.target.value }),
-                    spellCheck: false,
-                  }),
-                ),
-              ),
+                  h('div', { style: C.mono, title: workspace.path }, `${t('from')}: ${workspace.path}`),
+                  h(
+                    'div',
+                    { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                    h('div', { style: { ...C.mono, flex: 1, wordBreak: 'break-all' }, title: target }, `${t('newPath')}: ${target}`),
+                    canPick
+                      ? h('button', {
+                          style: C.button,
+                          onClick: async () => {
+                            const dir = await pick()
+                            if (!dir) return
+                            setRemap({ ...remap, [workspace.path]: dir })
+                          },
+                        }, t('changePath'))
+                      : null,
+                    override && override.trim()
+                      ? h('button', {
+                          style: C.linkButton,
+                          onClick: () => {
+                            const next = { ...remap }
+                            delete next[workspace.path]
+                            setRemap(next)
+                          },
+                        }, t('resetPath'))
+                      : null,
+                  ),
+                )
+              }),
             )
           : null,
         preview
@@ -814,15 +1417,23 @@ window.__ModuleLoader__.load({
                 {
                   style: running ? { ...C.primary, ...C.primaryOff } : C.primary,
                   disabled: running,
-                  onClick: () => run('import', {
-                    bundlePath,
-                    remap,
-                    rootDir: rootDir.trim() || null,
-                    rewritePaths,
-                    includeFiles,
-                    includeAttachments,
-                    overwriteFiles,
-                  }),
+                  onClick: () => {
+                    const decisions = {}
+                    for (const entry of check?.comparisons || []) {
+                      if (entry.verdict === 'packAhead') decisions[entry.id] = sessionChoices[entry.id] || 'append'
+                      else if (entry.verdict === 'diverged') decisions[entry.id] = sessionChoices[entry.id] || 'fork'
+                    }
+                    run('import', {
+                      bundlePath,
+                      remap,
+                      rootDir: rootDir.trim() || null,
+                      rewritePaths,
+                      includeFiles,
+                      includeAttachments,
+                      overwriteFiles,
+                      sessionDecisions: decisions,
+                    })
+                  },
                 },
                 running ? t('importRunning') : t('startImport'),
               ),
@@ -841,11 +1452,37 @@ window.__ModuleLoader__.load({
                 : null,
             )
           : null,
+        pluginCard,
+        inventory && inventory.lastImport
+          ? h(
+              'div',
+              { style: C.card },
+              h('div', { style: C.cardTitle }, t('undoLastTitle')),
+              h('div', { style: C.hint }, t('undoLastHint')),
+              h(
+                'div',
+                { style: C.hint },
+                `${fmtTime(inventory.lastImport.at)} · ${(inventory.lastImport.workspaces || []).length} ${t('projects')} · ${(inventory.lastImport.sessions || []).length} ${t('sessions')}`,
+              ),
+              h(
+                'div',
+                { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                h(
+                  'button',
+                  { style: undoBlocked ? { ...C.button, ...C.primaryOff } : C.button, disabled: undoBlocked, onClick: undoLast },
+                  t('undoLastDo'),
+                ),
+                undoLastNote ? h('span', { style: C.ok }, undoLastNote) : null,
+                undoBlocked && lastImportProbe ? h('span', { style: C.warn }, t('undoLastBlocked').replace('{n}', String((lastImportProbe.changed || []).length))) : null,
+              ),
+            )
+          : null,
       )
     }
 
     function MigrateSection(props) {
       const t = props.t
+      const { pick, canPick, startSession, canInstallSession } = props
       const [tab, setTab] = useState('export')
       const [inventory, setInventory] = useState(null)
       const [loadError, setLoadError] = useState(null)
@@ -877,10 +1514,11 @@ window.__ModuleLoader__.load({
           h('button', { style: { ...C.tab, ...(tab === 'import' ? C.tabActive : {}) }, onClick: () => setTab('import') }, t('tabImport')),
         ),
         tab === 'export'
-          ? h(ExportPane, { t, inventory, reload: load })
-          : h(ImportPane, { t, inventory, reload: load }),
+          ? h(ExportPane, { t, inventory, reload: load, pick, canPick })
+          : h(ImportPane, { t, inventory, reload: load, pick, canPick, startSession, canInstallSession }),
       )
     }
+
 
     return {
       inject: ['slots', 'locale'],
@@ -898,6 +1536,36 @@ window.__ModuleLoader__.load({
           }
         }
 
+        const dirService = (typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : null) ?? ctx.uiWorkspace ?? null
+        const desktopPicker = globalThis.__DSH_DIRECTORY_PICKER__
+        const canPick =
+          Boolean(desktopPicker && typeof desktopPicker.pick === 'function') ||
+          Boolean(dirService && typeof dirService.pickDirectory === 'function')
+
+        // The Host composes its picker as "native" on desktop, so there is no
+        // browse capability to drive and no way to pass a start directory; the
+        // OS chooser decides where it opens.
+        const pick = async () => {
+          try {
+            if (desktopPicker && typeof desktopPicker.pick === 'function') return (await desktopPicker.pick()) ?? null
+            if (dirService && typeof dirService.pickDirectory === 'function') {
+              return (await dirService.pickDirectory()) ?? null
+            }
+          } catch {
+            /* the caller keeps its previous value when the chooser fails */
+          }
+          return null
+        }
+
+        const canInstallSession = Boolean(dirService && typeof dirService.startSession === 'function')
+        const startSession = (workspaceId, options) => {
+          try {
+            dirService.startSession(workspaceId, options)
+          } catch {
+            /* the new-Session action lives in the shell; nothing to recover here */
+          }
+        }
+
         function Section() {
           if (locale && locale.subscribe) {
             React.useSyncExternalStore(
@@ -906,7 +1574,7 @@ window.__ModuleLoader__.load({
               () => ctx.locale.getSnapshot(),
             )
           }
-          return h(MigrateSection, { t })
+          return h(MigrateSection, { t, pick, canPick, startSession, canInstallSession })
         }
 
         ctx.slots.inject('settings.section', () =>
@@ -924,3 +1592,4 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
