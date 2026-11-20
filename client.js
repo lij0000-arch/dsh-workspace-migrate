@@ -104,6 +104,9 @@ window.__ModuleLoader__.load({
         scanImported: '已导入',
         scanPartial: '部分已存在 {n}',
         hostTooOld: '宿主插件还是旧版本（缺少文件浏览接口）。请完全退出 DSH（含托盘）后重新打开，仅刷新页面不会重载宿主代码。',
+        hostUnreachable: '连不上 DSH 主机（网络请求失败）。请刷新页面后重试；刚重启过 DSH 的话，重新打开这个页面。',
+        reconnecting: '连接中断，正在重连…（任务仍在运行）',
+        reconnectingLong: '主机暂时无响应，任务可能仍在进行。可以稍后点「刷新列表」查看结果。',
         hostVersion: '宿主接口',
       loadPreview: '读取迁移包',
       recent: '最近导出',
@@ -272,6 +275,9 @@ window.__ModuleLoader__.load({
         scanImported: 'imported',
         scanPartial: 'partly present {n}',
         hostTooOld: 'The running host plugin is outdated (no file-browser route). Quit DSH completely (including the tray) and reopen it; refreshing the page does not reload host code.',
+      hostUnreachable: 'Cannot reach the DSH host (network request failed). Refresh the page and retry; if DSH was just restarted, reopen this page.',
+      reconnecting: 'Connection lost, reconnecting… (the task is still running)',
+      reconnectingLong: 'The host is not responding right now; the task may still be running. Check again with Refresh list later.',
         hostVersion: 'host interface',
       loadPreview: 'Read bundle',
       recent: 'Recent exports',
@@ -648,10 +654,15 @@ window.__ModuleLoader__.load({
         if (!taskId) return undefined
         let stopped = false
         let timer = null
+        // A long import can stall the host for seconds (big files, disk flush).
+        // One dropped poll is not a failed import: retry quietly and only give up
+        // after several consecutive network errors.
+        let misses = 0
         const tick = async () => {
           try {
             const value = await api.get(`/task?id=${encodeURIComponent(taskId)}`)
             if (stopped) return
+            misses = 0
             if (value && value.error) {
               setError(value.error)
               setTask({ phase: 'failed', error: value.error, message: value.error, done: 0, total: 0 })
@@ -660,11 +671,26 @@ window.__ModuleLoader__.load({
             setTask(value)
             if (value.phase === 'running') timer = setTimeout(tick, 450)
           } catch (cause) {
-            if (!stopped) {
-              const message = cause instanceof Error ? cause.message : String(cause)
+            if (stopped) return
+            const message = cause instanceof Error ? cause.message : String(cause)
+            const offline = /Failed to fetch|NetworkError|Load failed|Network request failed/i.test(message)
+            if (!offline) {
               setError(message)
               setTask({ phase: 'failed', error: message, message, done: 0, total: 0 })
+              return
             }
+            // A dropped poll is not a failed import: the task keeps running on the
+            // host. Keep retrying and say so, instead of reporting failure for a
+            // task that later turns out to be fine.
+            misses += 1
+            const waited = Math.min(5000, 600 * misses)
+            setTask((previous) => ({
+              ...(previous || {}),
+              phase: 'running',
+              transient: true,
+              message: misses <= 12 ? t('reconnecting') : t('reconnectingLong'),
+            }))
+            timer = setTimeout(tick, waited)
           }
         }
         timer = setTimeout(tick, 250)
@@ -677,13 +703,32 @@ window.__ModuleLoader__.load({
       const run = useCallback(async (kind, body) => {
         setError(null)
         setTask({ phase: 'running', message: t(kind === 'export' ? 'exportRunning' : 'importRunning'), done: 0, total: 0 })
+        const isOffline = (cause) => {
+          const raw = cause instanceof Error ? cause.message : String(cause)
+          return /Failed to fetch|NetworkError|Load failed|Network request failed/i.test(raw)
+        }
         try {
-          const started = await api.post(`/${kind}`, body)
+          let started = null
+          try {
+            started = await api.post(`/${kind}`, body)
+          } catch (cause) {
+            // A host that is busy (large bundle, GC pause) or just restarted can
+            // drop the first connection; one quiet retry covers it without asking
+            // the user to click again.
+            if (!isOffline(cause)) throw cause
+            await new Promise((resolve) => setTimeout(resolve, 1500))
+            started = await api.post(`/${kind}`, body)
+          }
           setTaskId(started.taskId)
         } catch (cause) {
           const raw = cause instanceof Error ? cause.message : String(cause)
-          // A 404 here means the running host is an older build: say so instead of '未知接口'.
-          const message = raw.includes('未知接口') || raw.includes('404') ? t('hostTooOld') : raw
+          // Browser-level fetch failures carry no useful detail. Say what to do
+          // instead of leaving a bare "Failed to fetch" under the button.
+          const message = isOffline(cause)
+            ? t('hostUnreachable')
+            : raw.includes('未知接口') || raw.includes('404')
+              ? t('hostTooOld')
+              : raw
           setError(message)
           setTask({ phase: 'failed', error: message, message, done: 0, total: 0 })
         }

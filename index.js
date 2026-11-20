@@ -1,5 +1,5 @@
 import { promises as fsp } from 'node:fs'
-import { join, resolve, basename, dirname, relative, isAbsolute } from 'node:path'
+import { join, resolve, basename, dirname, relative, isAbsolute, parse } from 'node:path'
 import { homedir, hostname, platform, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -2575,6 +2575,23 @@ export function apply(ctx, config = {}) {
     // mapping wins, then <rootDir>/<project title>, then the original path.
     const targets = planTargets(workspaceDoc, rootDir, remapInput)
 
+    // A root on a drive that does not exist (wrong letter, unmounted disk) used
+    // to fail halfway: sessions imported, files missing, and the report only said
+    // "mkdir '\\?'". Refuse the whole import up front so nothing is half-done.
+    if (rootDir) {
+      const driveRoot = parse(rootDir).root
+      const localStyleForRoot = styleOfPlatform(platform())
+      if (localStyleForRoot === 'win' && driveRoot && driveRoot.length >= 2 && !(await pathExists(driveRoot))) {
+        throw new Error(`目标根目录不可用：${driveRoot} 不存在（盘符不对，或磁盘/移动盘未挂载）`)
+      }
+      try {
+        await fsp.mkdir(rootDir, { recursive: true })
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : String(error)
+        throw new Error(`无法创建目标根目录：${rootDir}（${code}）`)
+      }
+    }
+
     // The bundle records which OS it came from and which one it was packed
     // for; when the two styles differ the separators inside remapped paths
     // have to be converted, or the path stops resolving on the target.
@@ -2696,7 +2713,7 @@ export function apply(ctx, config = {}) {
         report.workspaces.push({ id: String(entity.id), path: entry.target, title: entity.title, from: entry.source.path })
       } catch (error) {
         report.warnings.push(
-          `项目「${entry.source.title}」创建失败：${error instanceof Error ? error.message : String(error)}`,
+          `项目「${entry.source.title}」创建失败（${entry.target}）：${error instanceof Error ? error.message : String(error)}`,
         )
       }
       task.done += 1
