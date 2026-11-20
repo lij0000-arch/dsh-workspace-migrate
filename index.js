@@ -1,8 +1,9 @@
 import { promises as fsp } from 'node:fs'
 import { join, resolve, basename, dirname, relative, isAbsolute } from 'node:path'
-import { homedir, hostname, platform } from 'node:os'
+import { homedir, hostname, platform, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 
 /**
  * Host half of the migration plugin: exports the three durable layers of a
@@ -78,10 +79,44 @@ export function apply(ctx, config = {}) {
   }
 
   function normalKey(path) {
-    const text = String(path)
-    return process.platform === 'win32' ? text.toLowerCase().replace(/\//g, '\\') : text
+    // A single backslash must become "/", so the pattern is /\\/ (source text),
+    // not /\\\\/ which would only match a doubled separator.
+    const text = String(path).replace(/\\/g, '/')
+    return process.platform === 'win32' || process.platform === 'darwin' ? text.toLowerCase() : text
   }
 
+  /** Path style of an OS name: Windows uses backslashes, everything else slashes. */
+  function styleOfPlatform(name) {
+    return name === 'win32' ? 'win' : 'posix'
+  }
+
+  /** Accept only the three platforms this plugin can describe, or null. */
+  function normalizeTargetPlatform(value) {
+    const text = String(value ?? '').trim()
+    if (text === 'win32' || text === 'darwin' || text === 'linux') return text
+    return null
+  }
+
+  /** Characters Windows refuses in a file name. */
+  const WINDOWS_BAD_NAME = /[<>:"/\\|?*\u0000-\u001f]/
+
+  /** True when this name cannot exist on Windows (and would need renaming). */
+  function illegalOnWindows(name) {
+    const base = String(name)
+    if (WINDOWS_BAD_NAME.test(base)) return true
+    if (/[. ]$/.test(base)) return true
+    return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(base)
+  }
+
+  /**
+   * Convert separators inside the part of a path that follows a remapped root.
+   * Windows-to-POSIX may span spaces (backslashes are rare in prose), while
+   * POSIX-to-Windows must stop at whitespace so shell text is not rewritten.
+   */
+  function convertSeparators(tail, toStyle) {
+    if (!tail) return tail
+    return toStyle === 'posix' ? tail.replace(/\\/g, '/') : tail.replace(/\//g, '\\')
+  }
   function trimSep(path) {
     return String(path).replace(/[\\/]+$/, '')
   }
@@ -200,16 +235,22 @@ export function apply(ctx, config = {}) {
       let text = value
       for (const pair of pairs) {
         if (pair.from === pair.to) continue
+        const toStyle = pair.toStyle ?? styleOfPlatform(process.platform)
         const variants = [
           [pair.from, pair.to],
           [String(pair.from).replace(/\\/g, '/'), String(pair.to).replace(/\\/g, '/')],
         ]
+        // Spanning spaces is safe when converting to POSIX, because backslashes
+        // are rare in prose; the other direction stops at whitespace so shell
+        // text that follows a path is never turned into backslashes.
+        const tailSource = toStyle === 'posix' ? '([\\\\/][^\\r\\n"\'`<>|]*)?' : '([\\\\/][^\\s"\'`<>|]*)?'
         for (const [from, to] of variants) {
           if (!from || from.length < 4) continue
-          const pattern = new RegExp(escapeRegExp(from), 'gi')
-          text = text.replace(pattern, () => {
+          const pattern = new RegExp(escapeRegExp(from) + tailSource, 'gi')
+          text = text.replace(pattern, (matched) => {
             stats.count += 1
-            return to
+            const rest = matched.slice(from.length)
+            return to + convertSeparators(rest, toStyle)
           })
         }
       }
@@ -374,6 +415,84 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /** Summary of a single-file bundle, from the manifest inside the archive. */
+  async function archiveSummary(path) {
+    const manifest = await readArchiveManifest(path)
+    if (!manifest) return null
+    let bytes = null
+    try {
+      bytes = (await fsp.stat(path)).size
+    } catch {
+      bytes = null
+    }
+    return {
+      path,
+      name: basename(path),
+      file: true,
+      createdAt: manifest.createdAt ?? null,
+      formatVersion: manifest.formatVersion ?? null,
+      workspaces: Array.isArray(manifest.workspaces) ? manifest.workspaces.length : 0,
+      sessions: Array.isArray(manifest.sessions) ? manifest.sessions.length : 0,
+      sourceHost: manifest.source?.host ?? null,
+      bytes: bytes ?? manifest.bytes ?? null,
+    }
+  }
+
+  /**
+   * How many of a bundle's Sessions already exist on this machine. The list uses
+   * it to flag bundles that were imported before, so they start unchecked and
+   * nobody re-parses or re-imports them by accident.
+   */
+  async function bundleLocalOverlap(path) {
+    try {
+      const manifest = looksLikeBundleFile(path) ? await readArchiveManifest(path) : await readManifest(path)
+      if (!manifest) return null
+      const ids = (Array.isArray(manifest.sessions) ? manifest.sessions : [])
+        .filter((entry) => entry && entry.origin !== 'subagent')
+        .map((entry) => String(entry.id))
+      const localIds = new Set((await ctx.sessionPersistence.list()).map((snapshot) => String(snapshot.header.id)))
+      const existing = ids.filter((id) => localIds.has(id)).length
+      return { sessions: ids.length, existing }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Find importable bundles inside one directory. The desktop picker only
+   * returns folders, so after the user picks a folder we look inside it for
+   * .dshmig files (and legacy folder bundles) instead of asking them to type a
+   * file path by hand.
+   */
+  async function scanBundleDir(dirPath) {
+    const root = resolve(String(dirPath ?? ''))
+    const found = []
+    let entries = []
+    try {
+      entries = await fsp.readdir(root, { withFileTypes: true })
+    } catch {
+      return { dir: root, bundles: [], error: '目录不存在或无法读取' }
+    }
+    for (const entry of entries) {
+      const full = join(root, entry.name)
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(BUNDLE_FILE_EXT)) {
+        const summary = await archiveSummary(full)
+        if (summary) {
+          const overlap = await bundleLocalOverlap(full)
+          found.push({ ...summary, existing: overlap ? overlap.existing : 0, total: overlap ? overlap.sessions : summary.sessions })
+        }
+      } else if (entry.isDirectory()) {
+        const summary = await bundleSummary(full)
+        if (summary) {
+          const overlap = await bundleLocalOverlap(full)
+          found.push({ ...summary, existing: overlap ? overlap.existing : 0, total: overlap ? overlap.sessions : summary.sessions })
+        }
+      }
+    }
+    found.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))
+    return { dir: root, bundles: found }
+  }
+
   async function listBundles() {
     const root = join(dshHome(), 'migrations')
     const bundles = []
@@ -385,7 +504,16 @@ export function apply(ctx, config = {}) {
       entries = []
     }
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue
+      if (!entry.isDirectory()) {
+        if (entry.name.toLowerCase().endsWith(BUNDLE_FILE_EXT)) {
+          const single = await archiveSummary(join(root, entry.name))
+          if (single) {
+            seen.add(single.path)
+            bundles.push(single)
+          }
+        }
+        continue
+      }
       const summary = await bundleSummary(join(root, entry.name))
       if (!summary) continue
       seen.add(summary.path)
@@ -440,7 +568,8 @@ export function apply(ctx, config = {}) {
     return {
       home,
       migrationsDir: join(home, 'migrations'),
-      codeVersion: 11,
+      codeVersion: 13,
+      hostPlatform: platform(),
       workspaces,
       sessions,
       archived: sets.archived,
@@ -453,6 +582,351 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // ── single-file bundle (.dshmig = stored ZIP) ─────────────────────────────
+
+  /**
+   * A bundle is hundreds of loose files, which is awkward to hand over and easy
+   * to damage with one stray copy. The single-file form keeps the same internal
+   * layout but wraps it in a stored (uncompressed) ZIP: sessions are already
+   * zstd frames, so deflating them again wastes time, and storing lets an
+   * incremental update copy unchanged payloads byte for byte.
+   */
+  const BUNDLE_FILE_EXT = '.dshmig'
+
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256)
+    for (let n = 0; n < 256; n += 1) {
+      let c = n
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      table[n] = c >>> 0
+    }
+    return table
+  })()
+
+  function crc32(buffer) {
+    let crc = 0xffffffff
+    for (let i = 0; i < buffer.length; i += 1) crc = CRC_TABLE[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8)
+    return (crc ^ 0xffffffff) >>> 0
+  }
+
+  /** Collect every regular file under `root`, as POSIX-style relative names. */
+  async function collectBundleFiles(root, prefix = '') {
+    const out = []
+    let entries = []
+    try {
+      entries = await fsp.readdir(join(root, prefix), { withFileTypes: true })
+    } catch {
+      return out
+    }
+    for (const entry of entries) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) out.push(...(await collectBundleFiles(root, relative)))
+      else if (entry.isFile()) out.push(relative)
+    }
+    return out
+  }
+
+  /** Write one stored ZIP archive into `target`, streaming each entry. */
+  async function writeBundleArchive(root, target) {
+    const names = (await collectBundleFiles(root)).sort()
+    const handle = await fsp.open(target, 'w')
+    const central = []
+    let offset = 0
+    try {
+      for (const name of names) {
+        const data = await fsp.readFile(join(root, name))
+        const nameBytes = Buffer.from(name, 'utf8')
+        const crc = crc32(data)
+        const local = Buffer.alloc(30)
+        local.writeUInt32LE(0x04034b50, 0)
+        local.writeUInt16LE(20, 4)
+        local.writeUInt16LE(0x0800, 6)
+        local.writeUInt16LE(0, 8)
+        local.writeUInt16LE(0, 10)
+        local.writeUInt16LE(0, 12)
+        local.writeUInt32LE(crc, 14)
+        local.writeUInt32LE(data.length, 18)
+        local.writeUInt32LE(data.length, 22)
+        local.writeUInt16LE(nameBytes.length, 26)
+        local.writeUInt16LE(0, 28)
+        const entryOffset = offset
+        await handle.write(local)
+        await handle.write(nameBytes)
+        if (data.length > 0) await handle.write(data)
+        offset += local.length + nameBytes.length + data.length
+        central.push({ name: nameBytes, crc, size: data.length, offset: entryOffset })
+      }
+      const centralStart = offset
+      for (const entry of central) {
+        const header = Buffer.alloc(46)
+        header.writeUInt32LE(0x02014b50, 0)
+        header.writeUInt16LE(20, 4)
+        header.writeUInt16LE(20, 6)
+        header.writeUInt16LE(0x0800, 8)
+        header.writeUInt16LE(0, 10)
+        header.writeUInt16LE(0, 12)
+        header.writeUInt16LE(0, 14)
+        header.writeUInt32LE(entry.crc, 16)
+        header.writeUInt32LE(entry.size, 20)
+        header.writeUInt32LE(entry.size, 24)
+        header.writeUInt16LE(entry.name.length, 28)
+        header.writeUInt16LE(0, 30)
+        header.writeUInt16LE(0, 32)
+        header.writeUInt16LE(0, 34)
+        header.writeUInt16LE(0, 36)
+        header.writeUInt32LE(0, 38)
+        header.writeUInt32LE(entry.offset, 42)
+        await handle.write(header)
+        await handle.write(entry.name)
+        offset += header.length + entry.name.length
+      }
+      const end = Buffer.alloc(22)
+      end.writeUInt32LE(0x06054b50, 0)
+      end.writeUInt16LE(0, 4)
+      end.writeUInt16LE(0, 6)
+      end.writeUInt16LE(central.length, 8)
+      end.writeUInt16LE(central.length, 10)
+      end.writeUInt32LE(offset - centralStart, 12)
+      end.writeUInt32LE(centralStart, 16)
+      end.writeUInt16LE(0, 20)
+      await handle.write(end)
+    } finally {
+      await handle.close()
+    }
+    return { entries: names.length, bytes: offset + 22 }
+  }
+
+  /** Extract a stored ZIP archive into `target`; refuses paths that escape it. */
+  async function readBundleArchive(archive, target) {
+    const buffer = await fsp.readFile(archive)
+    const endIndex = (() => {
+      for (let i = buffer.length - 22; i >= 0 && i >= buffer.length - 22 - 65535; i -= 1) {
+        if (buffer.readUInt32LE(i) === 0x06054b50) return i
+      }
+      return -1
+    })()
+    if (endIndex < 0) throw new Error('不是有效的迁移包文件（缺少 ZIP 结束记录）')
+    const count = buffer.readUInt16LE(endIndex + 10)
+    let pointer = buffer.readUInt32LE(endIndex + 16)
+    let written = 0
+    for (let index = 0; index < count; index += 1) {
+      if (buffer.readUInt32LE(pointer) !== 0x02014b50) throw new Error('迁移包目录记录损坏')
+      const method = buffer.readUInt16LE(pointer + 10)
+      const size = buffer.readUInt32LE(pointer + 20)
+      const nameLength = buffer.readUInt16LE(pointer + 28)
+      const extraLength = buffer.readUInt16LE(pointer + 30)
+      const commentLength = buffer.readUInt16LE(pointer + 32)
+      const localOffset = buffer.readUInt32LE(pointer + 42)
+      const name = buffer.subarray(pointer + 46, pointer + 46 + nameLength).toString('utf8')
+      pointer += 46 + nameLength + extraLength + commentLength
+      if (name.endsWith('/')) continue
+      const safeName = name.replace(/\\/g, '/')
+      if (safeName.startsWith('/') || safeName.split('/').includes('..')) {
+        throw new Error(`迁移包里有非法路径：${name}`)
+      }
+      if (method !== 0) throw new Error(`迁移包条目使用了不支持的压缩方式（${method}）：${name}`)
+      if (buffer.readUInt32LE(localOffset) !== 0x04034b50) throw new Error(`迁移包条目损坏：${name}`)
+      const localNameLength = buffer.readUInt16LE(localOffset + 26)
+      const localExtraLength = buffer.readUInt16LE(localOffset + 28)
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength
+      const destination = join(target, ...safeName.split('/'))
+      await fsp.mkdir(dirname(destination), { recursive: true })
+      await fsp.writeFile(destination, buffer.subarray(dataStart, dataStart + size))
+      written += 1
+    }
+    return { entries: written }
+  }
+
+  /** True when the path names a single-file bundle rather than a folder. */
+  function looksLikeBundleFile(path) {
+    return String(path).toLowerCase().endsWith(BUNDLE_FILE_EXT)
+  }
+
+  /**
+   * Random-access reader for a stored ZIP: the central directory is parsed once
+   * and every entry is read straight from the file handle, so importing a bundle
+   * never copies it into a temp folder first.
+   */
+  async function openArchiveReader(archive) {
+    const handle = await fsp.open(String(archive), 'r')
+    try {
+      const size = (await handle.stat()).size
+      const tailLength = Math.min(size, 66_000)
+      const tail = Buffer.alloc(tailLength)
+      await handle.read(tail, 0, tailLength, size - tailLength)
+      let endIndex = -1
+      for (let i = tail.length - 22; i >= 0; i -= 1) {
+        if (tail.readUInt32LE(i) === 0x06054b50) {
+          endIndex = i
+          break
+        }
+      }
+      if (endIndex < 0) throw new Error('不是有效的迁移包文件（缺少 ZIP 结束记录）')
+      const count = tail.readUInt16LE(endIndex + 10)
+      const directorySize = tail.readUInt32LE(endIndex + 12)
+      const directoryOffset = tail.readUInt32LE(endIndex + 16)
+      const directory = Buffer.alloc(directorySize)
+      await handle.read(directory, 0, directorySize, directoryOffset)
+      const entries = new Map()
+      let pointer = 0
+      for (let index = 0; index < count; index += 1) {
+        if (directory.readUInt32LE(pointer) !== 0x02014b50) throw new Error('迁移包目录记录损坏')
+        const method = directory.readUInt16LE(pointer + 10)
+        const entrySize = directory.readUInt32LE(pointer + 20)
+        const nameLength = directory.readUInt16LE(pointer + 28)
+        const extraLength = directory.readUInt16LE(pointer + 30)
+        const commentLength = directory.readUInt16LE(pointer + 32)
+        const localOffset = directory.readUInt32LE(pointer + 42)
+        const name = directory.subarray(pointer + 46, pointer + 46 + nameLength).toString('utf8')
+        pointer += 46 + nameLength + extraLength + commentLength
+        if (name.endsWith('/')) continue
+        entries.set(name, { method, size: entrySize, offset: localOffset })
+      }
+      const readEntry = async (name) => {
+        const entry = entries.get(name)
+        if (!entry) return null
+        if (entry.method !== 0) throw new Error(`迁移包条目使用了不支持的压缩方式：${name}`)
+        const header = Buffer.alloc(30)
+        await handle.read(header, 0, 30, entry.offset)
+        if (header.readUInt32LE(0) !== 0x04034b50) throw new Error(`迁移包条目损坏：${name}`)
+        const nameLength = header.readUInt16LE(26)
+        const extraLength = header.readUInt16LE(28)
+        const start = entry.offset + 30 + nameLength + extraLength
+        const data = Buffer.alloc(entry.size)
+        if (entry.size > 0) await handle.read(data, 0, entry.size, start)
+        return data
+      }
+      return {
+        names: () => [...entries.keys()],
+        has: (name) => entries.has(name),
+        sizeOf: (name) => (entries.get(name) ? entries.get(name).size : 0),
+        read: readEntry,
+        list: (prefix) => [...entries.keys()].filter((name) => name.startsWith(prefix)),
+        close: () => handle.close(),
+      }
+    } catch (error) {
+      await handle.close().catch(() => {})
+      throw error
+    }
+  }
+
+  /**
+   * One uniform view over a bundle folder or a .dshmig file: reads, existence and
+   * listings behave the same, and only the folder flavour touches the disk.
+   */
+  async function openBundleView(path) {
+    const resolved = resolve(String(path))
+    if (!looksLikeBundleFile(resolved)) {
+      const root = resolved
+      const walk = async (prefix = '') => {
+        const out = []
+        let entries = []
+        try {
+          entries = await fsp.readdir(join(root, prefix), { withFileTypes: true })
+        } catch {
+          return out
+        }
+        for (const entry of entries) {
+          const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+          if (entry.isDirectory()) out.push(...(await walk(relative)))
+          else if (entry.isFile()) out.push(relative)
+        }
+        return out
+      }
+      return {
+        archive: false,
+        root,
+        has: async (name) => pathExists(join(root, name)),
+        read: (name) => fsp.readFile(join(root, name)),
+        list: (prefix) => walk(prefix.replace(/\/$/, '')),
+        sizeOf: async (name) => {
+          try {
+            return (await fsp.stat(join(root, name))).size
+          } catch {
+            return 0
+          }
+        },
+        close: async () => {},
+      }
+    }
+    const reader = await openArchiveReader(resolved)
+    return {
+      archive: true,
+      root: resolved,
+      has: async (name) => reader.has(name),
+      read: (name) => reader.read(name),
+      list: async (prefix) => {
+        const base = String(prefix).replace(/\/$/, '')
+        return reader.names().filter((name) => name === base || name.startsWith(`${base}/`))
+      },
+      sizeOf: async (name) => reader.sizeOf(name),
+      close: () => reader.close(),
+    }
+  }
+
+  /**
+   * Sanitize one relative path for the target platform. Windows refuses a set of
+   * characters and reserved names; every other platform keeps names as they are.
+   * Returns null when nothing had to change.
+   */
+  function sanitizeRelativeName(relative, targetStyle) {
+    if (targetStyle !== 'win') return null
+    const parts = String(relative).split('/')
+    let changed = false
+    const cleaned = parts.map((part) => {
+      let name = part.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '')
+      if (name.length === 0) name = '_'
+      if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name)) name = `_${name}`
+      if (name !== part) changed = true
+      return name
+    })
+    return changed ? cleaned.join('/') : null
+  }
+
+  /**
+   * Resolve a bundle path to a directory. Folders are used as they are; a
+   * single file is extracted into a temporary directory that the caller must
+   * release with `cleanup`.
+   */
+  async function openBundleSource(path) {
+    const resolved = resolve(String(path))
+    if (!looksLikeBundleFile(resolved)) return { dir: resolved, archive: null, cleanup: async () => {} }
+    const temp = join(tmpdir(), `dsh-migrate-${randomUUID()}`)
+    await fsp.mkdir(temp, { recursive: true })
+    await readBundleArchive(resolved, temp)
+    return {
+      dir: temp,
+      archive: resolved,
+      cleanup: async () => {
+        try {
+          await fsp.rm(temp, { recursive: true, force: true })
+        } catch {
+          /* the temp copy is disposable */
+        }
+      },
+    }
+  }
+
+
+  /** Manifest of a single-file bundle, or null when it is not one of ours. */
+  async function readArchiveManifest(archive) {
+    try {
+      // Read only the central directory and the one entry, never the whole file:
+      // listing a folder full of multi-hundred-megabyte bundles must stay cheap.
+      const reader = await openArchiveReader(archive)
+      try {
+        const raw = await reader.read('manifest.json')
+        if (!raw) return null
+        const manifest = JSON.parse(raw.toString('utf8'))
+        return manifest.kind === BUNDLE_KIND ? manifest : null
+      } finally {
+        await reader.close()
+      }
+    } catch {
+      return null
+    }
+  }
+
   async function readManifest(dir) {
     const manifest = JSON.parse(await fsp.readFile(join(dir, 'manifest.json'), 'utf8'))
     if (manifest.kind !== BUNDLE_KIND) throw new Error('这不是迁移包：manifest.kind 不匹配')
@@ -460,41 +934,69 @@ export function apply(ctx, config = {}) {
     return manifest
   }
 
+  /** Same validation, but reading through a bundle view (folder or archive). */
+  async function readManifestView(view) {
+    const raw = await view.read('manifest.json')
+    if (!raw) throw new Error('迁移包里没有 manifest.json')
+    const manifest = JSON.parse(raw.toString('utf8'))
+    if (manifest.kind !== BUNDLE_KIND) throw new Error('这不是迁移包：manifest.kind 不匹配')
+    if (Number(manifest.schema) > BUNDLE_SCHEMA) throw new Error(`迁移包结构版本 ${manifest.schema} 高于插件支持的 ${BUNDLE_SCHEMA}`)
+    return manifest
+  }
+
   async function preview(bundlePath) {
     if (!bundlePath) throw new Error('缺少迁移包路径')
-    const dir = resolve(String(bundlePath))
-    const manifest = await readManifest(dir)
-    let workspaces = []
+    const view = await openBundleView(bundlePath)
     try {
-      const doc = JSON.parse(await fsp.readFile(join(dir, 'workspaces.json'), 'utf8'))
-      workspaces = (doc.workspaces ?? []).map((workspace) => ({
-        id: workspace.id,
-        path: workspace.path,
-        title: workspace.title,
-        folder: workspace.folder ?? null,
-        sessions: Array.isArray(workspace.sessionIds) ? workspace.sessionIds.length : 0,
-        hasFiles: true,
-      }))
-    } catch {
-      workspaces = []
-    }
-    const sizes = {}
-    for (const workspace of workspaces) {
-      const files = join(dir, 'files', workspace.folder ? String(workspace.folder) : safeName(workspace.id))
-      sizes[workspace.id] = (await pathExists(files)) ? await dirSize(files) : 0
-    }
-    let plugins = null
-    try {
-      const doc = JSON.parse(await fsp.readFile(join(dir, 'plugins.json'), 'utf8'))
-      plugins = {
-        profile: doc.profile ?? null,
-        list: Array.isArray(doc.plugins) ? doc.plugins : [],
+      const dir = resolve(String(bundlePath))
+      const manifest = await readManifestView(view)
+      let workspaces = []
+      try {
+        const raw = await view.read('workspaces.json')
+        const doc = JSON.parse(raw.toString('utf8'))
+        workspaces = (doc.workspaces ?? []).map((workspace) => ({
+          id: workspace.id,
+          path: workspace.path,
+          title: workspace.title,
+          folder: workspace.folder ?? null,
+          sessions: Array.isArray(workspace.sessionIds) ? workspace.sessionIds.length : 0,
+          hasFiles: true,
+        }))
+      } catch {
+        workspaces = []
       }
-    } catch {
-      plugins = null
-    }
+      const sizes = {}
+      for (const workspace of workspaces) {
+        const folder = workspace.folder ? String(workspace.folder) : safeName(workspace.id)
+        const names = await view.list(`files/${folder}`)
+        let total = 0
+        for (const name of names) total += await view.sizeOf(name)
+        sizes[workspace.id] = total
+      }
+      let plugins = null
+      try {
+        const raw = await view.read('plugins.json')
+        const doc = JSON.parse(raw.toString('utf8'))
+        plugins = {
+          profile: doc.profile ?? null,
+          list: Array.isArray(doc.plugins) ? doc.plugins : [],
+        }
+      } catch {
+        plugins = null
+      }
+    const bundleStyle = styleOfPlatform(manifest.source?.platform ?? platform())
+    const localStyle = styleOfPlatform(platform())
+    const declaredTarget = normalizeTargetPlatform(manifest.target?.platform)
+    const crossOs = bundleStyle !== localStyle
+
     return {
       path: dir,
+      file: view.archive,
+      crossOs,
+      bundleStyle,
+      localStyle,
+      declaredTarget,
+      illegalNames: manifest.target?.illegalNames ?? 0,
       createdAt: manifest.createdAt ?? null,
       formatVersion: manifest.formatVersion ?? null,
       source: manifest.source ?? {},
@@ -502,8 +1004,11 @@ export function apply(ctx, config = {}) {
       sessions: Array.isArray(manifest.sessions) ? manifest.sessions.length : 0,
       workspaces: workspaces.map((workspace) => ({ ...workspace, bytes: sizes[workspace.id] ?? 0 })),
       plugins,
-      attachments: await pathExists(join(dir, 'attachments')),
+      attachments: await view.has('attachments'),
       bytes: manifest.bytes ?? null,
+    }
+    } finally {
+      await view.close()
     }
   }
 
@@ -604,7 +1109,97 @@ export function apply(ctx, config = {}) {
 
   // ── export ───────────────────────────────────────────────────────────────
 
+  /** Refresh several existing bundles in one run, merging the reports. */
+  async function runUpdateMany(task, options) {
+    const paths = Array.isArray(options.bundlePaths) ? options.bundlePaths.map(String).filter(Boolean) : []
+    if (paths.length === 0) throw new Error('没有选中的迁移包')
+    const merged = {
+      mode: 'update',
+      path: paths[0],
+      files: [],
+      sessions: 0,
+      sessionsReused: 0,
+      subagents: 0,
+      workspaces: 0,
+      plugins: 0,
+      bytes: 0,
+      sessionBytes: 0,
+      filesCopied: 0,
+      filesUnchanged: 0,
+      filesRemoved: 0,
+      bytesCopied: 0,
+      illegalNames: 0,
+    }
+    let index = 0
+    for (const path of paths) {
+      index += 1
+      task.message = `增量更新第 ${index}/${paths.length} 个包：${basename(path)}`
+      const one = await runExport(task, { ...options, mode: 'update', bundlePath: path })
+      merged.files.push(one.path)
+      merged.sessions += one.sessions ?? 0
+      merged.sessionsReused += one.sessionsReused ?? 0
+      merged.subagents += one.subagents ?? 0
+      merged.workspaces += one.workspaces ?? 0
+      merged.plugins += one.plugins ?? 0
+      merged.bytes += one.bytes ?? 0
+      merged.sessionBytes += one.sessionBytes ?? 0
+      merged.filesCopied += one.filesCopied ?? 0
+      merged.filesUnchanged += one.filesUnchanged ?? 0
+      merged.filesRemoved += one.filesRemoved ?? 0
+      merged.bytesCopied += one.bytesCopied ?? 0
+      merged.illegalNames += one.illegalNames ?? 0
+    }
+    task.done += 1
+    return merged
+  }
+
   async function runExport(task, options) {
+    // Updating a single-file bundle means unpacking it first; the recursive
+    // call writes the archive back to the same path through archiveTarget.
+    if (looksLikeBundleFile(options.bundlePath ?? '')) {
+      const archiveTarget = resolve(String(options.bundlePath))
+      const opened = await openBundleSource(archiveTarget)
+      try {
+        return await runExport(task, {
+          ...options,
+          bundlePath: opened.dir,
+          packageFormat: 'file',
+          archiveTarget,
+        })
+      } finally {
+        await opened.cleanup()
+      }
+    }
+
+    // One file per project: each project is exported on its own so the user
+    // can hand over exactly the projects a machine needs, and import them all
+    // in one go.
+    if (options.packageFormat === 'perProject' || options.packageFormat === 'perProjectOnly') {
+      const ids = Array.isArray(options.workspaceIds) ? options.workspaceIds.map(String) : []
+      const results = []
+      for (const id of ids) {
+        results.push(await runExport(task, { ...options, workspaceIds: [id], packageFormat: 'file' }))
+      }
+      return {
+        mode: 'perProject',
+        path: results[0] ? results[0].path : null,
+        files: results.map((entry) => entry.path),
+        sessions: results.reduce((sum, entry) => sum + entry.sessions, 0),
+        sessionsReused: results.reduce((sum, entry) => sum + entry.sessionsReused, 0),
+        workspaces: results.length,
+        bytes: results.reduce((sum, entry) => sum + entry.bytes, 0),
+        plugins: 0,
+        subagents: results.reduce((sum, entry) => sum + (entry.subagents ?? 0), 0),
+        filesCopied: results.reduce((sum, entry) => sum + entry.filesCopied, 0),
+        filesUnchanged: results.reduce((sum, entry) => sum + entry.filesUnchanged, 0),
+        filesRemoved: results.reduce((sum, entry) => sum + entry.filesRemoved, 0),
+        bytesCopied: results.reduce((sum, entry) => sum + entry.bytesCopied, 0),
+        rewritten: 0,
+        illegalNames: results.reduce((sum, entry) => sum + (entry.illegalNames ?? 0), 0),
+      }
+    }
+
+    const targetPlatform = normalizeTargetPlatform(options.targetPlatform) ?? platform()
     const home = dshHome()
     const outRoot = options.outDir && String(options.outDir).trim() ? resolve(String(options.outDir)) : join(home, 'migrations')
     const updating = options.mode === 'update' && options.bundlePath && String(options.bundlePath).trim().length > 0
@@ -682,6 +1277,8 @@ export function apply(ctx, config = {}) {
           sessionIds.add(id)
           grew = true
         }
+        // A DSH fork embeds its inherited prefix in its own log, so children do
+        // not need their parent shipped alongside them.
       }
     }
 
@@ -836,6 +1433,9 @@ export function apply(ctx, config = {}) {
     const fileWarnings = []
     const outKey = normalKey(dir)
     const filesState = {}
+    const targetStyleIsWindows = styleOfPlatform(targetPlatform) === 'win'
+    let illegalNames = 0
+    const illegalSamples = []
     let filesCopied = 0
     let filesUnchanged = 0
     let filesRemoved = 0
@@ -856,6 +1456,13 @@ export function apply(ctx, config = {}) {
       }
       const dest = join(dir, 'files', folders.get(String(workspace.id)) ?? safeName(workspace.id))
       const current = await walkFiles(source, excludes)
+      if (targetStyleIsWindows) {
+        for (const relative of current.keys()) {
+          if (!illegalOnWindows(basename(relative))) continue
+          illegalNames += 1
+          if (illegalSamples.length < 5) illegalSamples.push(relative)
+        }
+      }
       if (updating) {
         const previousFiles = previousState.files?.[workspace.id] ?? {}
         for (const [relative, info] of current) {
@@ -973,6 +1580,11 @@ export function apply(ctx, config = {}) {
         platform: platform(),
         appVersion: process.env.DSH_CLIENT_VERSION ?? null,
       },
+      target: {
+        platform: targetPlatform,
+        style: styleOfPlatform(targetPlatform),
+        illegalNames,
+      },
       formatVersion: pickFormatVersion(snapshots),
       options: {
         includeFiles: Boolean(options.includeFiles),
@@ -1020,13 +1632,35 @@ export function apply(ctx, config = {}) {
     )
     task.done += 1
 
-    await rememberBundle(dir)
+    // Single-file output: wrap the finished folder into a .dshmig archive and drop
+    // the folder, so the handover is one file instead of hundreds.
+    let finalPath = dir
+    let archiveInfo = null
+    // A folder bundle that is being updated in place stays a folder; only an
+    // explicit archive target (or a .dshmig source) produces a single file.
+    if (options.archiveTarget || looksLikeBundleFile(options.bundlePath ?? '') || (options.packageFormat === 'file' && !updating)) {
+      const archive = options.archiveTarget
+        ? resolve(String(options.archiveTarget))
+        : looksLikeBundleFile(options.bundlePath ?? '')
+          ? resolve(String(options.bundlePath))
+          : join(dirname(dir), `${basename(dir)}${BUNDLE_FILE_EXT}`)
+      finalPath = archive
+      archiveInfo = await writeBundleArchive(dir, archive)
+      if (!updating) await fsp.rm(dir, { recursive: true, force: true })
+    }
+
+    await rememberBundle(finalPath)
     return {
-      path: dir,
+      path: finalPath,
+      file: Boolean(archiveInfo),
+      archiveEntries: archiveInfo ? archiveInfo.entries : null,
       mode: updating ? 'update' : 'full',
       sessions: manifestSessions.length,
       sessionsReused,
       subagents: subagentSkipped,
+      targetPlatform,
+      illegalNames,
+      illegalSamples,
       workspaces: workspaceDoc.workspaces.length,
       plugins: pluginsWritten,
       bytes: totalBytes,
@@ -1052,19 +1686,13 @@ export function apply(ctx, config = {}) {
 
   // ── import ───────────────────────────────────────────────────────────────
 
-  async function loadSessionDocument(dir, meta) {
+  async function loadSessionDocument(view, meta) {
     const candidates = []
     if (meta.file) candidates.push(meta.file)
     candidates.push(`${safeName(meta.id)}.json.zst`, `${safeName(meta.id)}.json`)
     for (const name of candidates) {
-      const full = join(dir, 'sessions', name)
-      let buffer
-      try {
-        buffer = await fsp.readFile(full)
-      } catch (error) {
-        if (error && error.code === 'ENOENT') continue
-        throw error
-      }
+      const buffer = await view.read(`sessions/${name}`)
+      if (!buffer) continue
       if (name.endsWith('.zst')) {
         const zstd = await loadZstd()
         if (!zstd) throw new Error('本机运行时不支持 zstd，无法解压会话文件')
@@ -1258,14 +1886,24 @@ export function apply(ctx, config = {}) {
     return { refs: refs.size, missing: missingIds.length, missingIds: missingIds.slice(0, 20) }
   }
 
-  /** Render a session timestamp (seconds or milliseconds) as a local date. */
-  function formatStamp(value) {
-    const num = Number(value)
-    if (!Number.isFinite(num) || num <= 0) return ''
-    const date = new Date(num > 1e12 ? num : num * 1000)
-    if (Number.isNaN(date.getTime())) return ''
-    const pad = (n) => String(n).padStart(2, '0')
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  /**
+   * Readable name for a session. DSH appends a new `session/title` event on every
+   * rename or generated title, so the sidebar shows the LAST one; reading the
+   * first would report the original auto-generated name instead.
+   */
+  function sessionTitle(document) {
+    const events = document.events ?? []
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]
+      const title = event && event.type === 'session/title' && event.data ? event.data.title : null
+      if (typeof title === 'string' && title.trim().length > 0) return title.trim()
+    }
+    for (const event of events) {
+      if (!event || event.type !== 'user/message' || !event.data) continue
+      const text = typeof event.data.text === 'string' ? event.data.text : ''
+      if (text.trim().length > 0) return text.trim().slice(0, 40)
+    }
+    return null
   }
   /** Readable name for a session: DSH records one as a `session/title` event. */
   function sessionTitle(document) {
@@ -1283,7 +1921,7 @@ export function apply(ctx, config = {}) {
   }
 
   /** Seq-valued fields that must follow a renumbered event forward. */
-  const SEQ_REF_KEYS = new Set(['throughSeq', 'headerSeq', 'messageSeqs', 'shadowedSeqs'])
+  const SEQ_REF_KEYS = new Set(['throughSeq', 'headerSeq', 'messageSeqs', 'shadowedSeqs', 'sourceEventSeqs'])
 
   /** Shift seq references at or after `threshold` by one, so a fork marker fits. */
   function shiftSeqRefs(value, threshold, delta = 1, key = null) {
@@ -1296,6 +1934,229 @@ export function apply(ctx, config = {}) {
     if (typeof value === 'number' && key !== null && SEQ_REF_KEYS.has(key) && value >= threshold) return value + delta
     return value
   }
+  /**
+   * Make a merged event list legal for the host: the store requires
+   * `events[i].seq === i`, so dropping internal markers means renumbering every
+   * remaining event and moving the seq references inside them along.
+   */
+  function compactEventSeq(events) {
+    const kept = []
+    const mapping = new Map()
+    for (const event of events) {
+      if (!event) continue
+      if (event.type === 'session/end-seed') continue
+      const oldSeq = Number(event.seq)
+      if (Number.isFinite(oldSeq)) mapping.set(oldSeq, kept.length)
+      kept.push({ ...event, seq: kept.length })
+    }
+    const oldSeqs = [...mapping.keys()].sort((a, b) => a - b)
+    const remap = (value, key = null) => {
+      if (Array.isArray(value)) return value.map((item) => remap(item, key))
+      if (value && typeof value === 'object') {
+        const out = {}
+        for (const [childKey, child] of Object.entries(value)) out[childKey] = remap(child, childKey)
+        return out
+      }
+      if (typeof value !== 'number' || key === null || !SEQ_REF_KEYS.has(key)) return value
+      if (mapping.has(value)) return mapping.get(value)
+      // A `throughSeq` may point at a dropped marker: use the nearest kept seq.
+      let low = 0
+      let high = oldSeqs.length - 1
+      let best = null
+      while (low <= high) {
+        const mid = (low + high) >> 1
+        if (oldSeqs[mid] <= value) {
+          best = oldSeqs[mid]
+          low = mid + 1
+        } else high = mid - 1
+      }
+      return best === null ? 0 : mapping.get(best)
+    }
+    for (const event of kept) {
+      if (event.data && typeof event.data === 'object') event.data = remap(event.data)
+      // `sourceEventSeqs` sits on the event itself, not inside `data`; the host
+      // requires it to hold unique seqs earlier than the event.
+      if (Array.isArray(event.sourceEventSeqs)) {
+        const moved = event.sourceEventSeqs
+          .map((value) => remap(value, 'sourceEventSeqs'))
+          .filter((value) => Number.isFinite(value) && value < event.seq)
+        event.sourceEventSeqs = [...new Set(moved)]
+      }
+    }
+    return kept
+  }
+  /**
+   * A flattened fork still quotes the parent's id inside its inherited events
+   * (delivery markers, spliced inbox entries). The host rejects a current-
+   * generation marker that names another Session, so every foreign id is
+   * rewritten to the Session being imported.
+   */
+  function rewriteForeignSessionIds(events, ownId) {
+    const ids = new Set()
+    for (const event of events) {
+      const text = JSON.stringify(event)
+      for (const match of text.matchAll(/session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)) {
+        if (match[0].toLowerCase() !== String(ownId).toLowerCase()) ids.add(match[0])
+      }
+    }
+    if (ids.size === 0) return events
+    let serialized = JSON.stringify(events)
+    for (const foreign of ids) serialized = serialized.split(foreign).join(ownId)
+    return JSON.parse(serialized)
+  }
+
+
+
+  /**
+   * Paths are rewritten at import time, so the same conversation reads differently
+   * on the two machines (`D:\proj\x` here, `F:\proj\x` there). Comparing raw JSON
+   * would call such logs "diverged" and fork a Session that only grew; replacing
+   * path-shaped substrings with one token makes the comparison content-based.
+   */
+  const PATH_LIKE = /(?:[A-Za-z]:[\\/][^\s"'`<>|]*|\/(?:[^\s"'`<>|/]+\/)*[^\s"'`<>|]*)/g
+
+  function normalizeForCompare(value, depth = 0) {
+    if (depth > 12) return value
+    if (typeof value === 'string') {
+      // Event types look like paths (`turn/start`, `agent/inbox/spliced`); they
+      // must never be rewritten to the path token or two logs stop matching.
+      if (/^[a-z][a-z0-9-]*(\/[a-z][a-z0-9-]*)+$/.test(value)) return value
+      return value.replace(PATH_LIKE, '<path>')
+    }
+    if (Array.isArray(value)) return value.map((item) => normalizeForCompare(item, depth + 1))
+    if (value && typeof value === 'object') {
+      const out = {}
+      for (const [key, child] of Object.entries(value)) out[key] = normalizeForCompare(child, depth + 1)
+      return out
+    }
+    return value
+  }
+  /** Log bookkeeping that each machine writes for itself, never shared content. */
+  function isBookkeepingEvent(event) {
+    if (!event || typeof event.type !== 'string') return false
+    return event.type.startsWith('session-log-') || event.type === 'session/end-seed'
+  }
+
+  /**
+   * Where each bundled project goes on this machine: an explicit per-project
+   * mapping wins, then `<rootDir>/<title>`, then the original path. Shared by the
+   * import and the pre-import check so both agree on the mapping.
+   */
+  function planTargets(workspaceDoc, rootDir, remapInput) {
+    const targets = []
+    const usedTargets = new Set()
+    for (const workspace of workspaceDoc.workspaces ?? []) {
+      const explicit = Object.prototype.hasOwnProperty.call(remapInput, workspace.path)
+        ? String(remapInput[workspace.path] ?? '').trim()
+        : ''
+      let target
+      if (explicit) {
+        target = resolve(normalizeTargetPath(explicit))
+      } else if (rootDir) {
+        const base = safeSegment(workspace.title || basename(workspace.path), workspace.id)
+        let candidate = join(rootDir, base)
+        let suffix = 2
+        while (usedTargets.has(normalKey(candidate))) {
+          candidate = join(rootDir, `${base}-${suffix}`)
+          suffix += 1
+        }
+        target = candidate
+      } else {
+        target = workspace.path
+      }
+      usedTargets.add(normalKey(target))
+      targets.push({ source: workspace, target })
+    }
+    return targets
+  }
+
+  /** Root-mapping pairs, exactly the ones the import will apply. */
+  function planPairs(targets, remapInput, localStyle) {
+    const pairs = []
+    for (const entry of targets) {
+      if (entry.source.path === entry.target) continue
+      pairs.push({ from: entry.source.path, to: entry.target, toStyle: localStyle })
+    }
+    for (const [from, to] of Object.entries(remapInput)) {
+      if (!from || !to || String(from).trim() === String(to).trim()) continue
+      if (targets.some((entry) => normalKey(entry.source.path) === normalKey(from))) continue
+      pairs.push({ from: String(from), to: String(to), toStyle: localStyle })
+    }
+    pairs.sort((a, b) => normalKey(b.from).length - normalKey(a.from).length)
+    return pairs
+  }
+
+  /**
+   * Claim write ownership of a Session. DSH allows one writer at a time, so a
+   * Session that is open in the UI (or running a turn) rejects the claim; retry
+   * briefly, then give up with a message the user can act on.
+   */
+  async function openForWrite(id, attempts = 4, delayMs = 400) {
+    let lastError = null
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await ctx.sessionPersistence.open(id, 'write')
+      } catch (error) {
+        lastError = error
+        const message = error instanceof Error ? error.message : String(error)
+        const owned = /already owned|SessionAlreadyOwned/i.test(message) || error?.name === 'SessionAlreadyOwnedError'
+        if (!owned || attempt === attempts) break
+        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt))
+      }
+    }
+    const message = lastError instanceof Error ? lastError.message : String(lastError)
+    const owned = /already owned|SessionAlreadyOwned/i.test(message) || lastError?.name === 'SessionAlreadyOwnedError'
+    throw new Error(
+      owned
+        ? '该会话正在 DSH 里打开着或正在运行，同一时间只允许一个写入者；请关闭该会话后重新导入'
+        : message,
+    )
+  }
+
+  /** Apply the import's path mapping to a copy of the bundle's events. */
+  function mapEventPaths(events, pairs) {
+    if (!pairs || pairs.length === 0) return events
+    const stats = { count: 0 }
+    const clone = JSON.parse(JSON.stringify(Array.isArray(events) ? events : []))
+    for (const event of clone) {
+      if (event && event.data && typeof event.data === 'object') event.data = rewritePaths(event.data, pairs, stats)
+    }
+    return clone
+  }
+
+  /** Key-order-insensitive JSON so a re-serialized event still compares equal. */
+  function stableStringify(value) {
+    if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`
+    if (value && typeof value === 'object') {
+      const keys = Object.keys(value).filter((key) => value[key] !== undefined).sort()
+      return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+    }
+    return JSON.stringify(value) ?? 'null'
+  }
+
+  function canonicalEvent(event) {
+    return stableStringify(normalizeForCompare(event))
+  }
+
+  /** First index where two content streams disagree, for diagnostics. */
+  function firstDifference(localEvents, packEvents) {
+    const a = localEvents.filter((event) => !isBookkeepingEvent(event))
+    const b = packEvents.filter((event) => !isBookkeepingEvent(event))
+    const min = Math.min(a.length, b.length)
+    for (let index = 0; index < min; index += 1) {
+      if (canonicalEvent(a[index]) !== canonicalEvent(b[index])) {
+        return {
+          index,
+          localType: a[index]?.type ?? null,
+          packType: b[index]?.type ?? null,
+          local: canonicalEvent(a[index]).slice(0, 160),
+          pack: canonicalEvent(b[index]).slice(0, 160),
+        }
+      }
+    }
+    return null
+  }
+
 
   /**
    * Compare a local log with the bundled one by walking their common prefix.
@@ -1304,13 +2165,54 @@ export function apply(ctx, config = {}) {
    * localAhead the bundle is a strict prefix, so this machine is newer
    * diverged   both changed, so neither side is safe to drop automatically
    */
-  function compareEvents(local, pack) {
-    const a = Array.isArray(local) ? local : []
-    const b = Array.isArray(pack) ? pack : []
+  /**
+   * Index of the first event where the local log and the bundle disagree, counting
+   * bookkeeping events too. The append point hinges on this: filtering bookkeeping
+   * can hide a missing enqueue splice and start the append one event too late.
+   */
+  function firstStrictDifference(localEvents, packEvents) {
+    const min = Math.min(localEvents.length, packEvents.length)
+    for (let index = 0; index < min; index += 1) {
+      if (canonicalEvent(localEvents[index]) !== canonicalEvent(packEvents[index])) return index
+    }
+    return min
+  }
+
+  /**
+   * Decide whether the bundle simply extends the local log, and where to start
+   * appending. A local log written by an older build can hold a stray seed marker
+   * where the bundle has an inbox splice, so a strict first-difference is the
+   * anchor: when everything the local log has past that point is bookkeeping, the
+   * bundle's events are renumbered onto the end instead of forking.
+   */
+  function appendPlan(localEvents, packEvents) {
+    const local = Array.isArray(localEvents) ? localEvents : []
+    const pack = Array.isArray(packEvents) ? packEvents : []
+    const diverge = firstStrictDifference(local, pack)
+    if (pack.length <= diverge) return null
+    if (diverge >= local.length) return { start: local.length, delta: 0 }
+    const extra = local.slice(diverge)
+    if (extra.every((event) => isBookkeepingEvent(event))) {
+      return { start: diverge, delta: local.length - diverge }
+    }
+    return null
+  }
+
+  function compareEvents(local, pack, pairs = null) {
+    // Delivery markers and seed boundaries are per-machine bookkeeping, so
+    // they are dropped before comparing: otherwise a Session that merely got
+    // opened on this machine looks "diverged" from the bundle.
+    const a = (Array.isArray(local) ? local : []).filter((event) => !isBookkeepingEvent(event))
+    // The bundle still carries the old machine's paths. Applying the same mapping
+    // the import would apply makes a moved project compare by content instead of
+    // by drive letter, and it handles paths containing spaces (which the path
+    // token normalization below cannot match).
+    const mapped = mapEventPaths(pack, pairs)
+    const b = (Array.isArray(mapped) ? mapped : []).filter((event) => !isBookkeepingEvent(event))
     const min = Math.min(a.length, b.length)
     let index = 0
     while (index < min) {
-      if (JSON.stringify(a[index]) !== JSON.stringify(b[index])) return 'diverged'
+      if (canonicalEvent(a[index]) !== canonicalEvent(b[index])) return 'diverged'
       index += 1
     }
     if (a.length === b.length) return 'identical'
@@ -1329,9 +2231,12 @@ export function apply(ctx, config = {}) {
   }
 
   /** Count the plugins recorded in a bundle; 0 when there is no list. */
-  async function countBundlePlugins(dir) {
+  /** Count the plugins recorded in a bundle; 0 when there is no list. */
+  async function countBundlePlugins(view) {
     try {
-      const doc = JSON.parse(await fsp.readFile(join(dir, 'plugins.json'), 'utf8'))
+      const raw = await view.read('plugins.json')
+      if (!raw) return 0
+      const doc = JSON.parse(raw.toString('utf8'))
       return Array.isArray(doc.plugins) ? doc.plugins.length : 0
     } catch {
       return 0
@@ -1359,10 +2264,46 @@ export function apply(ctx, config = {}) {
     return { id: String(entity.id), path: dir, title, created: true }
   }
 
-  async function auditBundle(bundlePath) {
+
+  async function auditBundle(bundlePath, options = {}) {
     if (!bundlePath) throw new Error('缺少迁移包路径')
+    const view = await openBundleView(bundlePath)
+    try {
+      return await auditBundleView(bundlePath, view, options)
+    } finally {
+      await view.close()
+    }
+  }
+
+  /** `YYYY-MM-DD HH:mm` for a timestamp that may be seconds or milliseconds. */
+  function formatStamp(value) {
+    if (value === null || value === undefined) return ''
+    const raw = typeof value === 'number' ? value : Date.parse(String(value))
+    if (!Number.isFinite(raw) || raw <= 0) return ''
+    const date = new Date(raw < 1e12 ? raw * 1000 : raw)
+    const pad = (number) => String(number).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  }
+
+  async function auditBundleView(bundlePath, view, options = {}) {
     const dir = resolve(String(bundlePath))
-    const manifest = await readManifest(dir)
+    const manifest = await readManifestView(view)
+    // The check runs before the import, so it has to plan the same targets the
+    // import will use; otherwise a moved project looks "diverged" only because
+    // its paths differ.
+    let checkPairs = []
+    try {
+      const rootDir = options.rootDir ? resolve(normalizeTargetPath(String(options.rootDir))) : null
+      const remapInput = options.remap && typeof options.remap === 'object' ? options.remap : {}
+      if (rootDir || Object.keys(remapInput).length > 0) {
+        const rawWorkspaces = await view.read('workspaces.json')
+        const workspaceDoc = rawWorkspaces ? JSON.parse(rawWorkspaces.toString('utf8')) : { workspaces: [] }
+        const targets = planTargets(workspaceDoc, rootDir, remapInput)
+        checkPairs = planPairs(targets, remapInput, styleOfPlatform(platform()))
+      }
+    } catch {
+      checkPairs = []
+    }
     const problems = []
     let totalRefs = 0
     let totalMissing = 0
@@ -1377,7 +2318,7 @@ export function apply(ctx, config = {}) {
     for (const meta of manifest.sessions ?? []) {
       let document
       try {
-        document = await loadSessionDocument(dir, meta)
+        document = await loadSessionDocument(view, meta)
       } catch {
         continue
       }
@@ -1402,6 +2343,7 @@ export function apply(ctx, config = {}) {
       const entry = {
         id,
         title,
+        packTitle: title,
         packEvents: Array.isArray(document.events) ? document.events.length : 0,
         localEvents: null,
         verdict: 'new',
@@ -1410,15 +2352,20 @@ export function apply(ctx, config = {}) {
         try {
           const local = await readLocalSession(id)
           entry.localEvents = Array.isArray(local.events) ? local.events.length : 0
-          entry.verdict = compareEvents(local.events, document.events)
+          // The sidebar shows the local title; a bundle exported before a rename
+          // still carries the old one, so prefer the local title and keep the pack's
+          // as a hint when they differ.
+          const localTitle = sessionTitle(local)
+          if (localTitle) entry.title = localTitle
+          entry.verdict = compareEvents(local.events, document.events, checkPairs)
         } catch {
           entry.verdict = 'unreadable'
         }
       }
       comparisons.push(entry)
     }
-    const attachmentsInBundle = await pathExists(join(dir, 'attachments'))
-    const pluginsInBundle = await countBundlePlugins(dir)
+    const attachmentsInBundle = await view.has('attachments')
+    const pluginsInBundle = await countBundlePlugins(view)
     return {
       path: dir,
       sessions: (manifest.sessions ?? []).length,
@@ -1439,54 +2386,230 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /**
+   * Batch import: one file per project is the natural handover, so the caller
+   * may hand over several bundles at once. Each bundle is imported on its own
+   * and the reports are merged; failures in one never stop the rest.
+   */
+  /** Counts from one bundle without importing it, used by the confirm step. */
+  async function bundleInfo(path) {
+    const target = resolve(String(path ?? ''))
+    try {
+      if (looksLikeBundleFile(target)) {
+        const manifest = await readArchiveManifest(target)
+        if (!manifest) return { path: target, error: '不是有效的迁移包' }
+        return {
+          path: target,
+          name: basename(target),
+          file: true,
+          sessions: Array.isArray(manifest.sessions) ? manifest.sessions.length : 0,
+          workspaces: Array.isArray(manifest.workspaces) ? manifest.workspaces.length : 0,
+          createdAt: manifest.createdAt ?? null,
+          bytes: (await fsp.stat(target)).size,
+        }
+      }
+      const manifest = await readManifest(target)
+      return {
+        path: target,
+        name: basename(target),
+        file: false,
+        sessions: Array.isArray(manifest.sessions) ? manifest.sessions.length : 0,
+        workspaces: Array.isArray(manifest.workspaces) ? manifest.workspaces.length : 0,
+        createdAt: manifest.createdAt ?? null,
+        bytes: manifest.bytes ?? null,
+      }
+    } catch (error) {
+      return { path: target, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+
+
+  /** Resolve what to do with a Session that already exists locally. */
+  async function resolveDecision(opts, sourceId, view, meta, decisions, diagnostics, pairs) {
+    const explicit = decisions[sourceId]
+    if (typeof explicit === 'string' && explicit.length > 0) return explicit
+        // Batch mode has nobody to ask per Session, so pick the safe default:
+        // append when the bundle is strictly ahead, fork when both grew, skip
+        // when this machine is already ahead or the logs are identical.
+        if (!opts.autoDecide) return 'skip'
+        try {
+          const local = await readLocalSession(sourceId)
+          const packDocument = await loadSessionDocument(view, meta)
+          // The bundle may extend a log that carries a stray seed marker where the
+          // bundle has an inbox splice; that is still an append, only its start
+          // index moves earlier so the splice is not skipped.
+          if (appendPlan(local.events, packDocument.events)) return 'append'
+          const verdict = compareEvents(local.events, packDocument.events, pairs)
+          if (verdict === 'packAhead') return 'append'
+          if (verdict === 'diverged') {
+            const diff = firstDifference(local.events, packDocument.events)
+            if (diff && diagnostics) diagnostics.push({ id: sourceId, ...diff })
+            return 'fork'
+          }
+          return 'skip'
+        } catch {
+          return 'skip'
+        }
+
+  }
+
+  /**
+   * Import several bundles in one pass: preview/体检 already produced the
+   * per-Session decisions, so each bundle is imported with the same decision map
+   * and the reports are merged. One undone record is written for the whole run.
+   */
+  async function runBatchImport(task, options) {
+    const paths = Array.isArray(options.bundlePaths) ? options.bundlePaths.map(String).filter(Boolean) : []
+    if (paths.length === 0) throw new Error('没有选中的迁移包')
+    const merged = {
+      mode: 'batch',
+      path: paths[0],
+      batch: paths.length,
+      bundles: [],
+      workspaces: [],
+      importedSessions: [],
+      sessionsImported: 0,
+      sessionsAppended: [],
+      sessionsForked: [],
+      sessionsSkipped: [],
+      warnings: [],
+      subagentSkipped: 0,
+      flattened: 0,
+      ungrouped: 0,
+      unreadable: [],
+      orphans: [],
+      unattached: [],
+      rewritten: 0,
+      renamedFiles: 0,
+      missingAttachments: 0,
+      attachmentGaps: [],
+      filesCopied: 0,
+      attachments: false,
+      recordSink: { workspaces: [], sessions: [], counts: {} },
+    }
+    let index = 0
+    for (const bundlePath of paths) {
+      index += 1
+      task.message = `导入第 ${index}/${paths.length} 个包：${basename(bundlePath)}`
+      try {
+        const info = await bundleInfo(bundlePath)
+        if (info.sessions === 0 && info.workspaces === 0) {
+          merged.bundles.push({ path: bundlePath, ok: true, skipped: '空包（无会话、无工作区）' })
+          continue
+        }
+        const one = await runImport(task, {
+          ...options,
+          bundlePath,
+          recordSink: merged.recordSink,
+        })
+        merged.bundles.push({ path: bundlePath, ok: true, sessions: one.sessionsImported, warnings: one.warnings.length })
+        merged.sessionsImported += one.sessionsImported
+        merged.importedSessions.push(...one.importedSessions)
+        merged.sessionsAppended.push(...one.sessionsAppended)
+        merged.sessionsForked.push(...one.sessionsForked)
+        merged.sessionsSkipped.push(...one.sessionsSkipped)
+        merged.workspaces.push(...one.workspaces)
+        merged.warnings.push(...one.warnings)
+        merged.subagentSkipped += one.subagentSkipped ?? 0
+        merged.flattened += one.flattened ?? 0
+        merged.ungrouped += one.ungrouped ?? 0
+        merged.rewritten += one.rewritten ?? 0
+        merged.unreadable.push(...(one.unreadable ?? []))
+        merged.orphans.push(...(one.orphans ?? []))
+        merged.renamedFiles += one.renamedFiles ?? 0
+        merged.missingAttachments += one.missingAttachments ?? 0
+        merged.attachmentGaps.push(...(one.attachmentGaps ?? []))
+        merged.filesCopied += one.filesCopied ?? 0
+        merged.attachments = merged.attachments || Boolean(one.attachments)
+      } catch (error) {
+        merged.bundles.push({ path: bundlePath, ok: false, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    await writeLastImport({
+      at: new Date().toISOString(),
+      bundle: null,
+      workspaces: merged.recordSink.workspaces,
+      sessions: merged.recordSink.sessions,
+      counts: merged.recordSink.counts,
+    })
+    task.done += 1
+    return merged
+  }
+
   async function runImport(task, options) {
-    const dir = resolve(String(options.bundlePath ?? ''))
     if (!options.bundlePath) throw new Error('缺少迁移包路径')
-    const manifest = await readManifest(dir)
-    const workspaceDoc = JSON.parse(await fsp.readFile(join(dir, 'workspaces.json'), 'utf8'))
+    // A bundle is read through one view: a folder is used in place, a .dshmig is
+    // read entry by entry, so no temporary copy of the package is made.
+    const view = await openBundleView(options.bundlePath)
+    try {
+      return await runImportFromView(task, options, view)
+    } finally {
+      await view.close()
+    }
+  }
+
+  async function runImportFromView(task, options, view) {
+    const dir = resolve(String(options.bundlePath ?? ''))
+    const manifest = await readManifestView(view)
+    const workspaceDoc = JSON.parse((await view.read('workspaces.json')).toString('utf8'))
     const rootDir =
       options.rootDir && String(options.rootDir).trim() ? resolve(normalizeTargetPath(options.rootDir)) : null
     const remapInput = options.remap && typeof options.remap === 'object' ? options.remap : {}
 
     // Resolve one target directory per bundled project: an explicit per-project
     // mapping wins, then <rootDir>/<project title>, then the original path.
-    const targets = []
-    const usedTargets = new Set()
-    for (const workspace of workspaceDoc.workspaces ?? []) {
-      const explicit = Object.prototype.hasOwnProperty.call(remapInput, workspace.path)
-        ? String(remapInput[workspace.path] ?? '').trim()
-        : ''
-      let target
-      if (explicit) {
-        target = resolve(normalizeTargetPath(explicit))
-      } else if (rootDir) {
-        const base = safeSegment(workspace.title || basename(workspace.path), workspace.id)
-        let candidate = join(rootDir, base)
-        let suffix = 2
-        while (usedTargets.has(normalKey(candidate))) {
-          candidate = join(rootDir, `${base}-${suffix}`)
-          suffix += 1
-        }
-        target = candidate
-      } else {
-        target = workspace.path
-      }
-      usedTargets.add(normalKey(target))
-      targets.push({ source: workspace, target })
-    }
+    const targets = planTargets(workspaceDoc, rootDir, remapInput)
+
+    // The bundle records which OS it came from and which one it was packed
+    // for; when the two styles differ the separators inside remapped paths
+    // have to be converted, or the path stops resolving on the target.
+    const bundleStyle = styleOfPlatform(manifest.source?.platform ?? platform())
+    const localStyle = styleOfPlatform(platform())
+    const declaredTarget = normalizeTargetPlatform(manifest.target?.platform)
+    const crossOs = bundleStyle !== localStyle
 
     const pairs = []
     for (const entry of targets) {
       if (entry.source.path === entry.target) continue
-      pairs.push({ from: entry.source.path, to: entry.target })
+      pairs.push({ from: entry.source.path, to: entry.target, toStyle: localStyle })
     }
     for (const [from, to] of Object.entries(remapInput)) {
       if (!from || !to || String(from).trim() === String(to).trim()) continue
       if (targets.some((entry) => normalKey(entry.source.path) === normalKey(from))) continue
-      pairs.push({ from: String(from), to: String(to) })
+      pairs.push({ from: String(from), to: String(to), toStyle: localStyle })
     }
     pairs.sort((a, b) => normalKey(b.from).length - normalKey(a.from).length)
 
+    // File names Windows cannot store are sanitized before anything is imported,
+    // and each rename is added to the path pairs so Session text that mentions the
+    // old name is rewritten to the new one instead of pointing at nothing.
+    const renamePairs = []
+    const fileRenames = new Map()
+    if (localStyle === 'win') {
+      for (const entry of targets) {
+        const workspace = entry.source
+        const folder = workspace.folder ? String(workspace.folder) : safeName(workspace.id)
+        for (const name of await view.list(`files/${folder}`)) {
+          const relative = name.slice(`files/${folder}/`.length)
+          const safe = sanitizeRelativeName(relative, localStyle)
+          if (!safe) continue
+          fileRenames.set(`${folder}/${relative}`, safe)
+          // Two spellings: the tail after a root rewrite may keep forward
+          // slashes, so both a Windows and a POSIX form must match.
+          const renameFrom = join(entry.target, ...relative.split('/'))
+          const renameTo = join(entry.target, ...safe.split('/'))
+          renamePairs.push({ from: renameFrom, to: renameTo, toStyle: 'win' })
+          renamePairs.push({ from: renameFrom, to: renameTo, toStyle: 'posix' })
+        }
+      }
+      if (fileRenames.size > 0) {
+        // `report` is declared further down; only the ordering matters here.
+        renamePairs.sort((a, b) => normalKey(b.from).length - normalKey(a.from).length)
+      }
+    }
+
+    const forkDiagnostics = []
     const decisions =
       options.sessionDecisions && typeof options.sessionDecisions === 'object' ? options.sessionDecisions : {}
 
@@ -1495,6 +2618,10 @@ export function apply(ctx, config = {}) {
     const sessionCounts = {}
     const report = {
       path: dir,
+      crossOs,
+      bundleStyle,
+      localStyle,
+      illegalNames: manifest.target?.illegalNames ?? 0,
       rootDir,
       workspaces: [],
       sessionsImported: 0,
@@ -1510,11 +2637,18 @@ export function apply(ctx, config = {}) {
       missingAttachments: 0,
       attachmentGaps: [],
       filesCopied: 0,
+      filesNew: 0,
+      filesUnchanged: 0,
+      filesSkippedExisting: 0,
       fileSkips: [],
       attachments: false,
+      renamedFiles: fileRenames.size,
+      unreadable: [],
+      orphans: [],
+      unattached: [],
       warnings: [],
     }
-    const willInstallAttachments = Boolean(options.includeAttachments) && (await pathExists(join(dir, 'attachments')))
+    const willInstallAttachments = Boolean(options.includeAttachments) && (await view.has('attachments'))
 
     const snapshots = await ctx.sessionPersistence.list()
     const localVersion = pickFormatVersion(snapshots)
@@ -1527,6 +2661,8 @@ export function apply(ctx, config = {}) {
     const preOrder = ctx.workspaceRegistry.list().map((workspace) => String(workspace.id))
     const preExisting = new Set(preOrder)
     const created = []
+    // Which Workspace each imported Session belongs to, for the attach check.
+    const attachTargets = new Map()
     task.total = (workspaceDoc.workspaces ?? []).length + (manifest.sessions ?? []).length + 2
 
     for (const entry of targets) {
@@ -1578,23 +2714,54 @@ export function apply(ctx, config = {}) {
       }
       let id = sourceId
       if (existing.has(sourceId)) {
-        const choice = String(decisions[sourceId] ?? 'skip')
+        const choice = await resolveDecision(options, sourceId, view, meta, decisions, forkDiagnostics, pairs)
+        if (options.autoDecide && !decisions[sourceId]) report.autoDecided += 1
         if (choice === 'append') {
           // The bundle only adds events, so extend the local log in place.
           try {
             const local = await readLocalSession(sourceId)
-            const packDocument = await loadSessionDocument(dir, meta)
+            const packDocument = await loadSessionDocument(view, meta)
             const packEvents = Array.isArray(packDocument.events) ? packDocument.events : []
-            const localCount = Array.isArray(local.events) ? local.events.length : 0
-            if (packEvents.length > localCount) {
-              const handle = await ctx.sessionPersistence.open(sourceId, 'write')
+            const localEvents = Array.isArray(local.events) ? local.events : []
+            const localCount = localEvents.length
+            // Align on the first strict difference. A local log written by an
+            // older build can carry a stray `session/end-seed`, which hides the
+            // bundle's inbox splice: appending from `localCount` would then start
+            // after the enqueue and the next splice would remove nothing.
+            const diverge = firstStrictDifference(localEvents, packEvents)
+            const extraLocal = localEvents.slice(diverge)
+            const onlyBookkeeping = extraLocal.every((event) => isBookkeepingEvent(event))
+            const start = diverge < localCount && onlyBookkeeping ? diverge : localCount
+            if (packEvents.length > start) {
+              const handle = await openForWrite(sourceId)
+              const delta = localCount - start
+              const tail = JSON.parse(JSON.stringify(packEvents.slice(start)))
               try {
-                await handle.append(packEvents.slice(localCount))
+                // Appended events come from the old machine: rewrite their paths
+                // so the continued history points at this machine, not the other one.
+                for (const event of tail) {
+                  if (Number.isFinite(event.seq)) event.seq += delta
+                  if (delta !== 0 && event.data && typeof event.data === 'object') {
+                    event.data = shiftSeqRefs(event.data, 0, delta)
+                  }
+                  if (delta !== 0 && Array.isArray(event.sourceEventSeqs)) {
+                    event.sourceEventSeqs = event.sourceEventSeqs.map((value) => value + delta)
+                  }
+                  if (options.rewritePaths !== false) {
+                    if (event.data && typeof event.data === 'object') {
+                      const stats = { count: 0 }
+                      event.data = rewritePaths(event.data, pairs, stats)
+                      if (renamePairs.length > 0) event.data = rewritePaths(event.data, renamePairs, stats)
+                      report.rewritten += stats.count
+                    }
+                  }
+                }
+                await handle.append(tail)
                 await handle.flush()
               } finally {
                 await handle.close()
               }
-              report.sessionsAppended.push({ id: sourceId, added: packEvents.length - localCount })
+              report.sessionsAppended.push({ id: sourceId, added: tail.length, resequenced: delta })
             } else {
               report.sessionsSkipped.push({ id: sourceId, reason: '包内没有更多内容' })
             }
@@ -1606,12 +2773,17 @@ export function apply(ctx, config = {}) {
           task.done += 1
           continue
         }
+
         if (choice === 'fork') {
+          const why = forkDiagnostics.find((entry) => entry.id === sourceId)
+          if (why) {
+            report.warnings.push(`会话 ${sourceId} 判定为两边都有新增：第 ${why.index} 条不同（本地 ${why.localType} / 包 ${why.packType}）`)
+          }
           // A fork keeps both sides: the shared prefix is copied verbatim from
           // this machine, then the bundle's branch continues after the marker.
           try {
             const local = await readLocalSession(sourceId)
-            const packDocument = await loadSessionDocument(dir, meta)
+            const packDocument = await loadSessionDocument(view, meta)
             const localEvents = Array.isArray(local.events) ? local.events : []
             const packEvents = Array.isArray(packDocument.events) ? packDocument.events : []
             let prefix = 0
@@ -1731,7 +2903,7 @@ export function apply(ctx, config = {}) {
             // copy so the branch content still arrives, clearly marked as a copy.
             const reason = error instanceof Error ? error.message : String(error)
             try {
-              const packDocument = await loadSessionDocument(dir, meta)
+              const packDocument = await loadSessionDocument(view, meta)
               const copyId = `session-${randomUUID()}`
               const copyHeader = { ...packDocument.header, id: copyId, isSeeded: false, delegationDepth: 0 }
               delete copyHeader.origin
@@ -1786,7 +2958,7 @@ export function apply(ctx, config = {}) {
         continue
       }
       try {
-        const document = await loadSessionDocument(dir, meta)
+        const document = await loadSessionDocument(view, meta)
         // Older bundles do not record `origin` in the manifest, so the document
         // itself is the only place left to spot a subagent transcript.
         if (document.header && document.header.origin === 'subagent') {
@@ -1826,29 +2998,76 @@ export function apply(ctx, config = {}) {
             }
           }
           report.rewritten += stats.count
+          // Renames apply to the *target* layout, so they run after the root
+          // mapping has turned source paths into target ones.
+          if (renamePairs.length > 0) {
+            const after = { count: 0 }
+            for (const event of events) {
+              if (event && event.data && typeof event.data === 'object') {
+                event.data = rewritePaths(event.data, renamePairs, after)
+              }
+            }
+            report.rewritten += after.count
+          }
         }
 
         if (header.isSeeded) {
           const inherited = Number(document.inheritedEventCount ?? 0)
           const parentId = header.parentSession ? String(header.parentSession) : null
           const parentMeta = parentId ? (manifest.sessions ?? []).find((entry) => String(entry.id) === parentId) : null
-          if (!parentMeta || inherited <= 0) {
-            report.sessionsSkipped.push({ id, reason: 'fork 会话缺少父会话种子，已跳过' })
+          const markerIndex = events.findIndex((event) => event && event.type === 'session/end-seed')
+          if (markerIndex > 0) {
+            // A DSH fork carries its inherited prefix inside its own log: the
+            // events before the marker are a verbatim copy of the parent, so the
+            // conversation is complete even when the parent file is absent.
+            // Keep everything, drop the marker and renumber: the Session becomes
+            // a normal, standalone conversation instead of a fork the host cannot
+            // resolve on this machine.
+            events = compactEventSeq(events)
+            header = { ...header, isSeeded: false, parentSession: undefined, origin: undefined, delegationDepth: undefined }
+            report.flattened += 1
+            report.embeddedFlattened = (report.embeddedFlattened ?? 0) + 1
+          } else if (parentMeta && inherited > 0) {
+            const parentDocument = await loadSessionDocument(view, parentMeta)
+            const parentEvents = Array.isArray(parentDocument.events) ? parentDocument.events : []
+            if (parentEvents.length < inherited) {
+              report.sessionsSkipped.push({ id, reason: '分叉会话的父会话事件不足以还原种子，已跳过' })
+              task.done += 1
+              continue
+            }
+            // The seed marker is an internal boundary: a flattened Session must
+            // carry none, and removing it leaves a hole in the sequence the host
+            // checks (`seq === index`), so the merged list is renumbered and every
+            // seq reference inside the events is moved along with it.
+            events = compactEventSeq([...parentEvents.slice(0, inherited), ...events])
+            header = { ...header, isSeeded: false, parentSession: undefined, origin: undefined, delegationDepth: undefined }
+            report.flattened += 1
+          } else if (markerIndex === 0) {
+            // The prefix was not embedded and the parent is unavailable: import
+            // the branch alone, which is what the user can still open, and say so.
+            events = compactEventSeq(events)
+            header = { ...header, isSeeded: false, parentSession: undefined, origin: undefined, delegationDepth: undefined }
+            report.truncatedForks = (report.truncatedForks ?? 0) + 1
+          } else {
+            report.sessionsSkipped.push({ id, reason: '分叉会话既没有内嵌前缀也没有父会话，无法还原，已跳过' })
             task.done += 1
             continue
           }
-          const parentDocument = await loadSessionDocument(dir, parentMeta)
-          const parentEvents = Array.isArray(parentDocument.events) ? parentDocument.events : []
-          if (parentEvents.length < inherited) {
-            report.sessionsSkipped.push({ id, reason: 'fork 会话的父会话事件不足，已跳过' })
-            task.done += 1
-            continue
-          }
-          events = [...parentEvents.slice(0, inherited), ...events]
-          header = { ...header, isSeeded: false, parentSession: undefined, origin: undefined, delegationDepth: undefined }
-          report.flattened += 1
+        } else if (events.some((event) => event && event.type === 'session/end-seed')) {
+          // A plain Session must not contain seed markers either; a bundle that
+          // was produced by an older flattening pass can carry them.
+          events = compactEventSeq(events)
+          report.seedMarkersStripped = (report.seedMarkersStripped ?? 0) + 1
         }
 
+        // Inherited events may still name the parent Session; make them name this one.
+        events = rewriteForeignSessionIds(events, id)
+        // Setting a key to `undefined` leaves an own property that JSON drops, and
+        // the host then rejects the header as "not losslessly JSON-serializable".
+        // Delete those keys instead of assigning them.
+        for (const key of Object.keys(header)) {
+          if (header[key] === undefined) delete header[key]
+        }
         const handle = await ctx.sessionPersistence.create(header)
         try {
           if (events.length > 0) await handle.append(events)
@@ -1864,6 +3083,7 @@ export function apply(ctx, config = {}) {
         report.importedSessions.push(id)
 
         const match = created.find((entry) => normalKey(header.cwd ?? '') === normalKey(entry.target))
+        if (match) attachTargets.set(id, match.entity)
         if (match && !attached.has(`${match.entity.id}:${id}`)) {
           try {
             await match.entity.attachSession(id)
@@ -1899,33 +3119,141 @@ export function apply(ctx, config = {}) {
     }
 
     if (options.includeFiles) {
-      for (const entry of created) {
-        const source = join(dir, 'files', entry.source?.folder ? String(entry.source.folder) : safeName(entry.source.id))
-        if (!(await pathExists(source))) continue
+      for (const entry of targets) {
+        const workspace = entry.source
+        const folder = workspace.folder ? String(workspace.folder) : safeName(workspace.id)
+        const names = await view.list(`files/${folder}`)
+        if (names.length === 0) continue
         try {
-          const items = await fsp.readdir(entry.target)
-          if (items.length > 0 && !options.overwriteFiles) {
-            report.fileSkips.push({ path: entry.target, reason: '目标目录非空，已跳过文件复制' })
-            continue
+          // Copy per file, not per directory: on a second import the project
+          // already has files, and skipping the whole tree would silently drop
+          // everything the old machine added since (test-3.md and friends).
+          let copied = 0
+          let unchanged = 0
+          let skipped = 0
+          for (const name of names) {
+            const relative = name.slice(`files/${folder}/`.length)
+            const finalRelative = fileRenames.get(`${folder}/${relative}`) ?? relative
+            const destination = join(entry.target, ...finalRelative.split('/'))
+            const data = await view.read(name)
+            if (!data) continue
+            let existing = null
+            try {
+              existing = await fsp.readFile(destination)
+            } catch {
+              existing = null
+            }
+            if (existing) {
+              if (existing.equals(data)) {
+                unchanged += 1
+                continue
+              }
+              if (!options.overwriteFiles) {
+                skipped += 1
+                if (report.fileSkips.length < 20) {
+                  report.fileSkips.push({ path: destination, reason: '目标已存在且内容不同，未覆盖' })
+                }
+                continue
+              }
+            }
+            await fsp.mkdir(dirname(destination), { recursive: true })
+            await fsp.writeFile(destination, data)
+            copied += 1
           }
-          await fsp.cp(source, entry.target, { recursive: true, force: true })
-          report.filesCopied += 1
+          if (copied > 0) report.filesCopied += 1
+          report.filesNew = (report.filesNew ?? 0) + copied
+          report.filesUnchanged = (report.filesUnchanged ?? 0) + unchanged
+          report.filesSkippedExisting = (report.filesSkippedExisting ?? 0) + skipped
         } catch (error) {
           report.warnings.push(`复制项目文件失败：${entry.target}（${error instanceof Error ? error.message : String(error)}）`)
         }
       }
     }
 
-    if (options.includeAttachments && (await pathExists(join(dir, 'attachments')))) {
+    if (options.includeAttachments && (await view.has('attachments'))) {
       try {
-        await fsp.cp(join(dir, 'attachments'), join(dshHome(), 'attachments'), { recursive: true, force: true })
-        report.attachments = true
+        const names = await view.list('attachments')
+        for (const name of names) {
+          const relative = name.slice('attachments/'.length)
+          const destination = join(dshHome(), 'attachments', ...relative.split('/'))
+          const data = await view.read(name)
+          if (!data) continue
+          await fsp.mkdir(dirname(destination), { recursive: true })
+          await fsp.writeFile(destination, data)
+        }
+        report.attachments = names.length > 0
       } catch (error) {
         report.warnings.push(`复制附件失败：${error instanceof Error ? error.message : String(error)}`)
       }
     }
 
-    await writeLastImport({
+    // Read every imported Session back: a file that was written but cannot be
+    // parsed shows up in the sidebar as a broken entry, so the report must say
+    // so instead of claiming a clean import.
+    const existingIds = new Set(snapshots.map((snapshot) => String(snapshot.header.id)))
+    const importedIds = new Set(newSessionIds)
+    const brokenIds = []
+    for (const id of newSessionIds) {
+      try {
+        const local = await readLocalSession(id)
+        if (!Array.isArray(local.events) || local.events.length === 0) {
+          report.unreadable.push({ id, reason: '导入后读取为空' })
+          brokenIds.push(id)
+        }
+      } catch (error) {
+        report.unreadable.push({ id, reason: error instanceof Error ? error.message : String(error) })
+        brokenIds.push(id)
+      }
+    }
+    // A session the host cannot read is worse than a missing one: it breaks the
+    // project list in the sidebar. Move those aside instead of leaving them.
+    if (brokenIds.length > 0) {
+      try {
+        const moved = await trashSessionDirs(dshHome(), brokenIds)
+        report.brokenRemoved = brokenIds.length
+        if (moved && moved.trashDir) report.brokenTrash = moved.trashDir
+      } catch (error) {
+        report.warnings.push(`清理无法读取的会话失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    // A Session whose parent is neither in this bundle nor on this machine will
+    // open as a headless fragment, so name it rather than leaving it silent.
+    for (const meta of manifest.sessions ?? []) {
+      const id = String(meta.id)
+      if (!importedIds.has(id)) continue
+      const parentId = meta.parent ? String(meta.parent) : null
+      if (!parentId) continue
+      if (importedIds.has(parentId) || existingIds.has(parentId)) continue
+      report.orphans.push({ id, parent: parentId })
+    }
+
+    // The sidebar lists a Session under a Workspace through the registry, so a
+    // Session that never got attached looks like an empty project. Verify and
+    // retry once, then report what still is not attached.
+    for (const id of report.importedSessions) {
+      const attachedNow = ctx.workspaceRegistry
+        .list()
+        .some((workspace) => [...(workspace.sessionIds ?? [])].map(String).includes(id))
+      if (attachedNow) continue
+      const home = attachTargets.get(id)
+      if (home) {
+        try {
+          await home.attachSession(id)
+        } catch {
+          /* reported below */
+        }
+      }
+      const ok = ctx.workspaceRegistry
+        .list()
+        .some((workspace) => [...(workspace.sessionIds ?? [])].map(String).includes(id))
+      if (!ok) report.unattached.push(id)
+    }
+
+    if (options.recordSink) {
+      options.recordSink.workspaces.push(...newWorkspaceIds)
+      options.recordSink.sessions.push(...newSessionIds)
+      Object.assign(options.recordSink.counts, sessionCounts)
+    } else await writeLastImport({
       at: new Date().toISOString(),
       bundle: dir,
       workspaces: newWorkspaceIds,
@@ -2005,12 +3333,32 @@ export function apply(ctx, config = {}) {
         sendJson(res, 200, await inventory())
         return
       }
+      if (req.method === 'GET' && route === '/bundle-info') {
+        sendJson(res, 200, await bundleInfo(url.searchParams.get('path')))
+        return
+      }
+      if (req.method === 'GET' && route === '/scan') {
+        sendJson(res, 200, await scanBundleDir(url.searchParams.get('dir')))
+        return
+      }
       if (req.method === 'GET' && route === '/preview') {
         sendJson(res, 200, await preview(url.searchParams.get('path')))
         return
       }
       if (req.method === 'GET' && route === '/check') {
-        sendJson(res, 200, await auditBundle(url.searchParams.get('path')))
+        // The client sends the same rootDir/remap it will use for the import, so
+        // the verdict here matches what the import will actually decide.
+        let remap = {}
+        try {
+          const raw = url.searchParams.get('remap')
+          if (raw) remap = JSON.parse(raw)
+        } catch {
+          remap = {}
+        }
+        sendJson(res, 200, await auditBundle(url.searchParams.get('path'), {
+          rootDir: url.searchParams.get('rootDir') || null,
+          remap,
+        }))
         return
       }
       if (req.method === 'GET' && route === '/last-import') {
@@ -2024,14 +3372,16 @@ export function apply(ctx, config = {}) {
       if (req.method === 'POST' && route === '/export') {
         const body = await readJson(req)
         const task = startTask('export')
-        runExport(task, body).then((result) => succeed(task, result)).catch((error) => fail(task, error))
+        const runner = Array.isArray(body.bundlePaths) && body.bundlePaths.length > 0 ? runUpdateMany : runExport
+        runner(task, body).then((result) => succeed(task, result)).catch((error) => fail(task, error))
         sendJson(res, 200, { taskId: task.id })
         return
       }
       if (req.method === 'POST' && route === '/import') {
         const body = await readJson(req)
         const task = startTask('import')
-        runImport(task, body).then((result) => succeed(task, result)).catch((error) => fail(task, error))
+        const runner = Array.isArray(body.bundlePaths) && body.bundlePaths.length > 0 ? runBatchImport : runImport
+        runner(task, body).then((result) => succeed(task, result)).catch((error) => fail(task, error))
         sendJson(res, 200, { taskId: task.id })
         return
       }
@@ -2042,7 +3392,8 @@ export function apply(ctx, config = {}) {
       if (req.method === 'POST' && route === '/cleanup') {
         sendJson(res, 200, await cleanupWorkspaces(await readJson(req)))
         return
-      }      if (req.method === 'POST' && route === '/setup-workspace') {
+      }
+      if (req.method === 'POST' && route === '/setup-workspace') {
         sendJson(res, 200, await setupWorkspace())
         return
       }

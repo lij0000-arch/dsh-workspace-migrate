@@ -21,6 +21,23 @@ window.__ModuleLoader__.load({
       files: '同时打包项目文件',
       filesHint: '排除 node_modules、.git 等可重建目录。',
       attachments: '同时打包图片附件',
+        targetOs: '迁移目标系统',
+        targetOsHint: '决定导入时如何转换对话里的路径分隔符。同系统迁移选默认即可。',
+        targetSame: '同系统（{os}）',
+        targetMac: 'Windows → macOS',
+        targetLinux: 'Windows → Linux',
+        targetWindows: 'macOS → Windows',
+        targetLinuxFromMac: 'macOS → Linux',
+        targetWinFromLinux: 'Linux → Windows',
+        targetMacFromLinux: 'Linux → macOS',
+        perProjectHint: '每个项目导出成一个 .dshmig 文件；导入时可多选，一次导入。',
+        scanTitle: '目录里找到的迁移包',
+        scanEmpty: '这个目录里没有 .dshmig 迁移包',
+        perProjectDone: '已导出 {n} 个项目文件',
+        crossOsTitle: '跨系统迁移',
+        crossOsLine: '本包来自 {from}，当前系统是 {to}。导入时会把对话里的路径分隔符转成本机风格。',
+        crossOsIllegal: '包内有 {n} 个文件名在 Windows 上不合法（含星号、问号、冒号、竖线等），复制会失败，需要先改名。',
+        crossOsOk: '同系统迁移，路径按原样重写。',
       outDir: '导出位置',
       outDirHint: '留空则用 {path}。',
         browse: '浏览…',
@@ -77,6 +94,17 @@ window.__ModuleLoader__.load({
       exportDone: '导出完成',
       exportFailed: '导出失败',
       bundlePath: '迁移包路径',
+        batchTitle: '批量导入（多选）',
+        batchHint: '选中多个迁移包，按默认策略一次导入：包内更新则追加，两边都有新增则分叉，其余跳过。',
+        batchImport: '导入选中的 {n} 个包',
+        browseFolder: '浏览…',
+        scanClose: '收起',
+        scanExpand: '展开',
+        scanHint: '勾选一个立即读取；勾选多个后点下方按钮，一次性对比全部会话。',
+        scanImported: '已导入',
+        scanPartial: '部分已存在 {n}',
+        hostTooOld: '宿主插件还是旧版本（缺少文件浏览接口）。请完全退出 DSH（含托盘）后重新打开，仅刷新页面不会重载宿主代码。',
+        hostVersion: '宿主接口',
       loadPreview: '读取迁移包',
       recent: '最近导出',
       preview: '迁移包内容',
@@ -93,6 +121,9 @@ window.__ModuleLoader__.load({
       startImport: '开始导入',
       importRunning: '正在导入…',
       importDone: '导入完成',
+        restartTitle: '导入完成 → 请重启 DSH',
+        restartBody: '会话与工作区已经写入磁盘，但侧栏、会话列表和缓存要等 DSH 重新加载后才完全刷新。',
+        restartSteps: '做法：完全退出 DSH（含托盘图标），再重新打开；只刷新页面不会重载宿主。',
       reportAppended: '追加更新',
       reportForked: '作为分叉合并',
       reportCopied: '作为副本导入（分叉不可用）',
@@ -109,7 +140,7 @@ window.__ModuleLoader__.load({
       undone: '已撤销本次导入',
       refused: '拒绝',
       update: '增量更新已有迁移包',
-      updateHint: '只复制新增或修改过的文件，未变化的文件与会话直接复用。适合同一个包反复同步。',
+        updateHint: '只复制新增或修改过的文件，未变化的会话与文件直接复用。目标可以填 .dshmig 文件，也可以填旧版文件夹包。',
       updateNow: '开始增量更新',
       reused: '复用会话',
       copied: '复制文件',
@@ -120,6 +151,16 @@ window.__ModuleLoader__.load({
       rewritePaths: '重写对话里提到的旧路径',
       rewritePathsHint: '工具调用与结果中的旧绝对路径会换成新路径，续聊时模型才找得到文件。',
       rewrittenPaths: '重写路径',
+        renamedFiles: '重命名的文件',
+        filesNew: '新增文件',
+        filesUnchanged: '未变文件',
+        filesSkippedExisting: '已存在未覆盖',
+        unreadableImported: '导入后无法读取的会话',
+        unreadableHint: '这些会话已写入磁盘但读不回来，通常是格式版本不一致；可用「撤销这次导入」清理。',
+        brokenRemoved: '已把 {n} 个无法读取的会话移入回收站，避免左侧栏报错。',
+        unattachedSessions: '未挂到工作区的会话（左栏可能不显示）',
+        orphanSessions: '父会话缺失的会话',
+        orphanHint: '这些会话指向的父会话既不在包里也不在本机，打开会像从中间截断。',
       ungrouped: '未归属项目的会话',
       cleaned: '已清理失效项目',
       cleanup: '清理失效项目',
@@ -148,6 +189,23 @@ window.__ModuleLoader__.load({
       files: 'Include project files',
       filesHint: 'Skips rebuildable directories such as node_modules and .git.',
       attachments: 'Include image attachments',
+        targetOs: 'Target system',
+        targetOsHint: 'Decides how path separators inside conversations are converted on import. Keep the default for same-system moves.',
+        targetSame: 'Same system ({os})',
+        targetMac: 'Windows → macOS',
+        targetLinux: 'Windows → Linux',
+        targetWindows: 'macOS → Windows',
+        targetLinuxFromMac: 'macOS → Linux',
+        targetWinFromLinux: 'Linux → Windows',
+        targetMacFromLinux: 'Linux → macOS',
+        perProjectHint: 'Each project becomes one .dshmig file; import several of them at once.',
+        scanTitle: 'Bundles found in this folder',
+        scanEmpty: 'No .dshmig bundle in this folder',
+        perProjectDone: 'Exported {n} project files',
+        crossOsTitle: 'Cross-system move',
+        crossOsLine: 'This bundle came from {from} and this machine is {to}; path separators inside conversations are converted on import.',
+        crossOsIllegal: '{n} file names in the bundle are illegal on Windows (asterisk, question mark, colon, pipe and similar), so copying them will fail until they are renamed.',
+        crossOsOk: 'Same system; paths are rewritten as they are.',
       outDir: 'Export location',
       outDirHint: 'Empty uses {path}.',
         browse: 'Browse…',
@@ -204,6 +262,17 @@ window.__ModuleLoader__.load({
       exportDone: 'Export finished',
       exportFailed: 'Export failed',
       bundlePath: 'Bundle path',
+        batchTitle: 'Batch import (multi-select)',
+        batchHint: 'Pick several bundles and import them in one go: bundle-ahead appends, both-grew forks, anything else is skipped.',
+        batchImport: 'Import the {n} selected bundles',
+        browseFolder: 'Browse…',
+        scanClose: 'Hide',
+        scanExpand: 'Show',
+        scanHint: 'Tick one to load it at once; tick several and press the button to compare every Session together.',
+        scanImported: 'imported',
+        scanPartial: 'partly present {n}',
+        hostTooOld: 'The running host plugin is outdated (no file-browser route). Quit DSH completely (including the tray) and reopen it; refreshing the page does not reload host code.',
+        hostVersion: 'host interface',
       loadPreview: 'Read bundle',
       recent: 'Recent exports',
       preview: 'Bundle contents',
@@ -220,6 +289,9 @@ window.__ModuleLoader__.load({
       startImport: 'Start import',
       importRunning: 'Importing…',
       importDone: 'Import finished',
+        restartTitle: 'Import finished → restart DSH',
+        restartBody: 'Sessions and workspaces are on disk, but the sidebar and caches only reload fully on the next start.',
+        restartSteps: 'Quit DSH completely (including the tray icon) and open it again; refreshing the page does not reload the host.',
       reportAppended: 'Updated in place',
       reportForked: 'Merged as forks',
       reportCopied: 'Imported as copies (fork unavailable)',
@@ -247,6 +319,16 @@ window.__ModuleLoader__.load({
       rewritePaths: 'Rewrite old paths mentioned in conversations',
       rewritePathsHint: 'Absolute paths inside tool calls and results are replaced with the new ones, so a resumed conversation finds its files.',
       rewrittenPaths: 'paths rewritten',
+        renamedFiles: 'files renamed',
+        filesNew: 'files added',
+        filesUnchanged: 'files unchanged',
+        filesSkippedExisting: 'existing files skipped',
+        unreadableImported: 'Sessions that cannot be read back',
+        unreadableHint: 'Written to disk but unreadable, usually a format-version mismatch; use undo to clean up.',
+        brokenRemoved: 'Moved {n} unreadable Session(s) to the trash so the sidebar stays usable.',
+        unattachedSessions: 'Sessions not attached to a workspace',
+        orphanSessions: 'Sessions with a missing parent',
+        orphanHint: 'Their parent is neither in the bundle nor on this machine, so they open mid-conversation.',
       ungrouped: 'sessions not attached to a project',
       cleaned: 'stale projects removed',
       cleanup: 'Clean up stale projects',
@@ -439,6 +521,14 @@ window.__ModuleLoader__.load({
           { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
           h('div', { style: C.ok }, `${t('exportDone')} · ${result.sessions} ${t('sessions')} · ${fmtBytes(result.bytes)}${result.attachments > 0 ? ` · ${result.attachments} ${t('attachmentsCount')}` : ''}${result.plugins > 0 ? ` · ${result.plugins} ${t('pluginsCount')}` : ''}`),
           result.subagents > 0 ? h('div', { style: C.hint }, `${result.subagents} ${t('subagentsSkipped')}`) : null,
+          result.files && result.files.length > 0
+            ? h(
+                'div',
+                { style: C.hint },
+                `${t('perProjectDone').replace('{n}', String(result.files.length))}`,
+                ...result.files.slice(0, 5).map((file) => h('div', { key: file, title: file }, `· ${file}`)),
+              )
+            : null,
           result.mode === 'update'
             ? h(
                 'div',
@@ -460,6 +550,30 @@ window.__ModuleLoader__.load({
         'div',
         { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
         h('div', { style: C.ok }, `${t('importDone')} · ${t('imported')} ${result.sessionsImported} · ${t('skipped')} ${result.sessionsSkipped.length}`),
+        (result.sessionsImported + (result.sessionsAppended || []).length + (result.sessionsForked || []).length + (result.workspaces || []).length) > 0
+          ? h(
+              'div',
+              {
+                style: {
+                  ...C.card,
+                  borderColor: 'var(--dsw-alias-state-warn-primary)',
+                  borderWidth: 2,
+                  background: 'var(--dsw-alias-bg-layer-2)',
+                  padding: '10px 12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                },
+              },
+              h(
+                'div',
+                { style: { fontWeight: 700, color: 'var(--dsw-alias-state-warn-primary)' } },
+                t('restartTitle'),
+              ),
+              h('div', { style: C.hint }, t('restartBody')),
+              h('div', { style: C.hint }, t('restartSteps')),
+            )
+          : null,
         (result.sessionsAppended || []).length > 0
           ? h(
               'div',
@@ -478,6 +592,11 @@ window.__ModuleLoader__.load({
           : null,
         result.flattened > 0 ? h('div', { style: C.hint }, `${t('flattened')}: ${result.flattened}`) : null,
         result.rewritten > 0 ? h('div', { style: C.hint }, `${t('rewrittenPaths')}: ${result.rewritten}`) : null,
+        result.renamedFiles > 0 ? h('div', { style: C.hint }, `${t('renamedFiles')}: ${result.renamedFiles}`) : null,
+        (result.filesNew || 0) + (result.filesUnchanged || 0) + (result.filesSkippedExisting || 0) > 0
+          ? h('div', { style: C.hint }, `${t('filesNew')}: ${result.filesNew || 0} · ${t('filesUnchanged')}: ${result.filesUnchanged || 0} · ${t('filesSkippedExisting')}: ${result.filesSkippedExisting || 0}`)
+          : null,
+        (result.unattached || []).length > 0 ? h('div', { style: C.warn }, `${t('unattachedSessions')}: ${result.unattached.length}`) : null,
         result.missingAttachments > 0
           ? h('div', { style: C.warn }, `${t('missingAttachments')}: ${result.missingAttachments}`)
           : null,
@@ -487,6 +606,25 @@ window.__ModuleLoader__.load({
               'div',
               { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
               ...result.warnings.map((text, index) => h('div', { key: index, style: C.warn }, `• ${text}`)),
+            )
+          : null,
+        (result.unreadable || []).length > 0
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+              h('div', { style: C.error }, `${t('unreadableImported')}: ${result.unreadable.length}`),
+              h('div', { style: C.hint }, t('unreadableHint')),
+              ...result.unreadable.slice(0, 4).map((item, index) =>
+                h('div', { key: index, style: C.error }, `• ${item.id} — ${item.reason}`),
+              ),
+              result.brokenRemoved > 0 ? h('div', { style: C.warn }, t('brokenRemoved').replace('{n}', String(result.brokenRemoved))) : null,
+            )
+          : null,
+        (result.orphans || []).length > 0
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+              h('div', { style: C.warn }, `${t('orphanSessions')}: ${result.orphans.length}`),
+              h('div', { style: C.hint }, t('orphanHint')),
+              ...result.orphans.slice(0, 4).map((item, index) =>
+                h('div', { key: index, style: C.hint }, `• ${item.id} → ${item.parent}`),
+              ),
             )
           : null,
         result.sessionsSkipped.length > 0
@@ -543,7 +681,9 @@ window.__ModuleLoader__.load({
           const started = await api.post(`/${kind}`, body)
           setTaskId(started.taskId)
         } catch (cause) {
-          const message = cause instanceof Error ? cause.message : String(cause)
+          const raw = cause instanceof Error ? cause.message : String(cause)
+          // A 404 here means the running host is an older build: say so instead of '未知接口'.
+          const message = raw.includes('未知接口') || raw.includes('404') ? t('hostTooOld') : raw
           setError(message)
           setTask({ phase: 'failed', error: message, message, done: 0, total: 0 })
         }
@@ -559,10 +699,47 @@ window.__ModuleLoader__.load({
       const [includeAttachments, setIncludeAttachments] = useState(true)
       const [includePlugins, setIncludePlugins] = useState(false)
       const [pluginSelected, setPluginSelected] = useState(null)
+      const [targetOs, setTargetOs] = useState('same')
+
       const [outDir, setOutDir] = useState('')
       const [updateTarget, setUpdateTarget] = useState('')
+      const [updateScan, setUpdateScan] = useState(null)
+      const [updatePicked, setUpdatePicked] = useState(new Set())
+      const [updateError, setUpdateError] = useState(null)
       const [cleanupNote, setCleanupNote] = useState(null)
       const { task, run } = usePolling(t)
+      /** Folder browse for the update target: real paths only, never an upload. */
+      const browseUpdateTarget = async () => {
+        setUpdateError(null)
+        try {
+          const dir = await pick()
+          if (!dir) return
+          // A legacy folder bundle is used as-is; otherwise list the .dshmig files
+          // inside the chosen folder so the update hits the real file on disk.
+          const info = await api.get(`/bundle-info?path=${encodeURIComponent(dir)}`).catch(() => null)
+          if (info && !info.error) {
+            setUpdateTarget(dir)
+            setUpdateScan(null)
+            return
+          }
+          const result = await api.get(`/scan?dir=${encodeURIComponent(dir)}`)
+          const found = (result && result.bundles) || []
+          setUpdateScan({ dir, bundles: found })
+          if (found.length === 1) setUpdateTarget(found[0].path)
+        } catch (error) {
+          setUpdateError(error instanceof Error ? error.message : String(error))
+        }
+      }
+
+
+      const hostPlatform = inventory && inventory.hostPlatform ? inventory.hostPlatform : 'win32'
+      const hostLabel = hostPlatform === 'win32' ? 'Windows' : hostPlatform === 'darwin' ? 'macOS' : 'Linux'
+      const targetOptions = [
+        { value: 'same', label: t('targetSame').replace('{os}', hostLabel) },
+        ...(hostPlatform === 'win32' ? [['darwin', t('targetMac')], ['linux', t('targetLinux')]] : []),
+        ...(hostPlatform === 'darwin' ? [['win32', t('targetWindows')], ['linux', t('targetLinuxFromMac')]] : []),
+        ...(hostPlatform === 'linux' ? [['win32', t('targetWinFromLinux')], ['darwin', t('targetMacFromLinux')]] : []),
+      ].map((entry) => (Array.isArray(entry) ? { value: entry[0], label: entry[1] } : entry))
 
       const workspaces = inventory ? inventory.workspaces : []
       const bundles = inventory && inventory.bundles ? inventory.bundles : []
@@ -718,6 +895,15 @@ window.__ModuleLoader__.load({
               )
             : null,
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+            h('div', { style: C.hint }, t('targetOs')),
+            h('select', {
+              style: C.input,
+              value: targetOs,
+              onChange: (event) => setTargetOs(event.target.value),
+            }, ...targetOptions.map((option) => h('option', { key: option.value, value: option.value }, option.label))),
+            h('div', { style: C.hint }, t('targetOsHint')),
+          ),
+          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
             h('div', { style: C.hint }, t('outDir')),
             h('div', { style: { display: 'flex', gap: 8 } },
               h('input', {
@@ -739,6 +925,7 @@ window.__ModuleLoader__.load({
                 : null,
             ),
             h('div', { style: C.hint }, t('outDirHint').replace('{path}', migrationsLabel(inventory))),
+            h('div', { style: C.hint }, t('perProjectHint')),
           ),
           h(
             'div',
@@ -759,6 +946,8 @@ window.__ModuleLoader__.load({
                     outDir: outDir.trim() || null,
                     includePlugins,
                     pluginNames: pluginSelected === null ? null : [...pluginSelected],
+                    targetPlatform: targetOs === 'same' ? undefined : targetOs,
+                    packageFormat: 'perProject',
                   }),
               },
               running ? t('exportRunning') : t('startExport'),
@@ -791,7 +980,7 @@ window.__ModuleLoader__.load({
                 h('div', { style: C.hint }, t('updateHint')),
                 h(
                   'div',
-                  { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                  { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
                   h('input', {
                     style: { ...C.input, flex: 1 },
                     title: updateTarget,
@@ -805,10 +994,7 @@ window.__ModuleLoader__.load({
                         'button',
                         {
                           style: C.button,
-                          onClick: async () => {
-                            const dir = await pick()
-                            if (dir) setUpdateTarget(dir)
-                          },
+                          onClick: browseUpdateTarget,
                         },
                         t('browse'),
                       )
@@ -819,15 +1005,42 @@ window.__ModuleLoader__.load({
                       style: running || !updateTarget ? { ...C.button, ...C.primaryOff } : C.button,
                       disabled: running || !updateTarget,
                       onClick: () =>
-                        run('export', {
-                          mode: 'update',
-                          bundlePath: updateTarget,
-                          includeFiles,
-                          includeAttachments,
-                        }),
+                        run('export',
+                          updatePicked.size > 1
+                            ? { mode: 'update', bundlePaths: [...updatePicked], includeFiles, includeAttachments }
+                            : { mode: 'update', bundlePath: updateTarget, includeFiles, includeAttachments }),
                     },
-                    t('updateNow'),
+                    updatePicked.size > 1 ? `${t('updateNow')} (${updatePicked.size})` : t('updateNow'),
+          updateError ? h('div', { style: C.error }, updateError) : null,
                   ),
+          updateScan && updateScan.bundles.length > 0
+            ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 4, flexBasis: '100%' } },
+                h('div', { style: C.hint }, t('scanTitle')),
+                ...updateScan.bundles.map((bundle) =>
+                  h('label', {
+                    key: bundle.path,
+                    style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' },
+                    title: bundle.path,
+                  },
+                    h('input', {
+                      type: 'checkbox',
+                      checked: updatePicked.has(bundle.path),
+                      onChange: () => {
+                        const next = new Set(updatePicked)
+                        if (next.has(bundle.path)) next.delete(bundle.path)
+                        else next.add(bundle.path)
+                        setUpdatePicked(next)
+                        setUpdateTarget(next.has(bundle.path) ? bundle.path : ([...next][0] || ''))
+                      },
+                    }),
+                    h('span', { style: { ...C.mono, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' } },
+                      `${bundle.name} · ${bundle.sessions} ${t('sessions')} · ${fmtBytes(bundle.bytes || 0)}`),
+                  ),
+                ),
+              )
+            : updateScan && updateScan.bundles.length === 0
+              ? h('div', { style: C.hint }, t('scanEmpty'))
+              : null,
                 ),
               ),
         ),
@@ -842,17 +1055,102 @@ window.__ModuleLoader__.load({
         case 'identical':
           return { label: t('verdictIdentical'), style: C.hint }
         case 'packAhead':
-          return { label: t('verdictPackAhead').replace('{n}', String(pack - local)), style: C.ok }
+          return { label: t('verdictPackAhead').replace('{n}', String(Math.max(0, (pack || 0) - (local || 0)))), style: C.ok }
         case 'localAhead':
-          return { label: t('verdictLocalAhead').replace('{n}', String(local - pack)), style: C.hint }
+          return { label: t('verdictLocalAhead').replace('{n}', String(Math.max(0, (local || 0) - (pack || 0)))), style: C.hint }
         case 'diverged':
-          return { label: t('verdictDiverged').replace('{local}', String(local)).replace('{pack}', String(pack)), style: C.error }
+          return { label: t('verdictDiverged').replace('{local}', String(local || 0)).replace('{pack}', String(pack || 0)), style: C.error }
         case 'unreadable':
           return { label: t('verdictUnreadable'), style: C.warn }
         default:
           return { label: t('verdictNew'), style: C.hint }
       }
     }
+    /** One same-name Session row with its per-row choice buttons. */
+    function comparisonRow(t, entry, sessionChoices, setSessionChoices) {
+      const view = verdictView(t, entry)
+      const choice =
+        entry.verdict === 'packAhead'
+          ? sessionChoices[entry.id] || 'append'
+          : entry.verdict === 'diverged'
+            ? sessionChoices[entry.id] || 'fork'
+            : 'skip'
+      const options =
+        entry.verdict === 'packAhead'
+          ? [
+              ['append', t('choiceAppend')],
+              ['skip', t('choiceSkip')],
+            ]
+          : entry.verdict === 'diverged'
+            ? [
+                ['fork', t('choiceFork')],
+                ['skip', t('choiceSkip')],
+              ]
+            : []
+      return h(
+        'div',
+        { key: entry.id, style: { display: 'flex', flexDirection: 'column', gap: 2, paddingBottom: 4 } },
+        h(
+          'div',
+          { style: { ...view.style, display: 'flex', gap: 8, alignItems: 'baseline' } },
+          h(
+            'span',
+            {
+              style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              title: entry.title || entry.id,
+            },
+            entry.title || entry.id,
+          ),
+          entry.packTitle && entry.packTitle !== entry.title
+            ? h('span', { style: { ...C.hint, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: entry.packTitle }, `(包里: ${entry.packTitle})`)
+            : null,
+          h('span', { style: { opacity: 0.75, whiteSpace: 'nowrap' } }, view.label),
+        ),
+        options.length > 0
+          ? h(
+              'div',
+              { style: { display: 'flex', gap: 6, paddingLeft: 2 } },
+              ...options.map(([value, label]) =>
+                h(
+                  'button',
+                  {
+                    key: value,
+                    style: {
+                      ...C.linkButton,
+                      fontWeight: choice === value ? 600 : 400,
+                      textDecoration: choice === value ? 'underline' : 'none',
+                      color: 'var(--dsw-alias-label-secondary)',
+                    },
+                    onClick: () => setSessionChoices({ ...sessionChoices, [entry.id]: value }),
+                  },
+                  label,
+                ),
+              ),
+            )
+          : null,
+      )
+    }
+
+    /** Group rows by bundle so several packages stay readable in one table. */
+    function comparisonGroups(t, comparisons, sessionChoices, setSessionChoices) {
+      const groups = new Map()
+      for (const entry of comparisons.slice(0, 40)) {
+        const key = entry.bundle || ''
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(entry)
+      }
+      const nodes = []
+      for (const [key, entries] of groups) {
+        if (key) {
+          nodes.push(
+            h('div', { key: `group:${key}`, style: { ...C.cardTitle, fontSize: 12, paddingTop: 8 } }, key),
+          )
+        }
+        for (const entry of entries) nodes.push(comparisonRow(t, entry, sessionChoices, setSessionChoices))
+      }
+      return nodes
+    }
+
     function pluginTypeLabel(t, type) {
       const keys = { official: 'typeOfficial', npm: 'typeNpm', link: 'typeLink', git: 'typeGit', tarball: 'typeTarball' }
       return t(keys[type] || 'typeNpm')
@@ -1040,18 +1338,64 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** The mapping the import will use, so the check judges the same targets. */
+      const checkQuery = (path) => {
+        const params = new URLSearchParams({ path })
+        const root = rootDir.trim()
+        if (root) params.set('rootDir', root)
+        if (remap && Object.keys(remap).length > 0) params.set('remap', JSON.stringify(remap))
+        return params.toString()
+      }
       const runCheck = async () => {
-        if (!bundlePath) return
+        // Selection comes from the folder list or from uploaded files; both fill
+        // the same set, and bundlePath is only a fallback for a typed path.
+        const picked = [...scanPicked].filter(Boolean)
+        if (picked.length === 0 && !bundlePath) return
         setChecking(true)
         setCheck(null)
+        setLoadError(null)
         try {
-          setCheck(await api.get(`/check?path=${encodeURIComponent(bundlePath)}`))
+          // 体检 is now the only entry: it loads the preview as well, so there is
+          // no separate "read bundle" step for the user to get wrong.
+          const first = picked.length > 0 ? picked[0] : bundlePath
+          setPreview(await api.get(`/preview?path=${encodeURIComponent(first)}`))
+          setBundlePath(first)
+          if (picked.length > 1) {
+            const combined = []
+            const totals = { sessions: 0, refs: 0, missing: 0 }
+            const perBundle = []
+            for (const path of picked) {
+              const name = path.split(/[\\/]/).pop()
+              const result = await api.get(`/check?${checkQuery(path)}`)
+              perBundle.push({ path, name })
+              totals.sessions += result.sessions || 0
+              totals.refs += result.totalRefs || 0
+              totals.missing += result.totalMissing || 0
+              for (const entry of result.comparisons || []) {
+                combined.push({ ...entry, bundle: name, bundlePath: path })
+              }
+            }
+            setCheck({ comparisons: combined, problems: [], sessions: totals.sessions, totalRefs: totals.refs, totalMissing: totals.missing })
+            setMulti(perBundle)
+            return
+          }
+          setMulti(null)
+          setCheck(await api.get(`/check?${checkQuery(first)}`))
         } catch (error) {
           setLoadError(error instanceof Error ? error.message : String(error))
         } finally {
           setChecking(false)
         }
       }
+
+      // Once an import finishes the uploaded copies are consumed: clear the
+      // selection so a second run cannot point at deleted inbox files.
+      useEffect(() => {
+        if (task && task.phase === 'done' && task.kind === 'import') {
+          setScanPicked(new Set())
+          setMulti(null)
+        }
+      }, [task])
 
       const load = async (path) => {
         setCheck(null)
@@ -1075,6 +1419,49 @@ window.__ModuleLoader__.load({
           setLoadError(error instanceof Error ? error.message : String(error))
         }
       }
+
+      /** Native file dialog: the only way to point straight at a .dshmig file. */
+      /** In-app file browser state: no native dialog is involved. */
+
+      /** Native file dialog through the browser input, the same entry DSH uses. */
+      /** Selected files wait here until the user confirms, never import directly. */
+      const [scanned, setScanned] = useState(null)
+      const [scanPicked, setScanPicked] = useState(new Set())
+      const [multi, setMulti] = useState(null)
+      const [scanCollapsed, setScanCollapsed] = useState(false)
+
+
+
+      /**
+       * Folder browse: the directory picker returns a REAL path, so bundles found
+       * this way are read in place with no temp copy. That is why 0.7.0 showed the
+       * true path, and it is kept as the primary entry for that reason.
+       */
+      const browseFolder = async () => {
+        setLoadError(null)
+        try {
+          const dir = await pick()
+          if (!dir) return
+          const result = await api.get(`/scan?dir=${encodeURIComponent(dir)}`)
+          const found = (result && result.bundles) || []
+          setScanned({ dir, bundles: found })
+          setScanCollapsed(false)
+          const firstFresh = found.find((entry) => !(entry.total > 0 && entry.existing >= entry.total))
+          setScanPicked(new Set(firstFresh ? [firstFresh.path] : []))
+          if (found.length === 1) {
+            setBundlePath(found[0].path)
+            load(found[0].path)
+          }
+        } catch (error) {
+          setLoadError(error instanceof Error ? error.message : String(error))
+        }
+      }
+
+
+
+
+
+
 
       // Coming back from the install Session: restore the bundle the user had open.
       useEffect(() => {
@@ -1187,10 +1574,9 @@ window.__ModuleLoader__.load({
                       `${bundle.name} · ${bundle.sessions} ${t('sessions')} · ${fmtBytes(bundle.bytes || 0)}`),
                   ),
                 ),
-                h('button', { style: C.button, onClick: () => load(bundlePath) }, t('loadPreview')),
               )
             : h('div', { style: C.hint }, t('noBundles')),
-          h('div', { style: { display: 'flex', gap: 8 } },
+          h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
             h('input', {
               style: { ...C.input, flex: 1 },
               title: bundlePath,
@@ -1199,19 +1585,57 @@ window.__ModuleLoader__.load({
               onChange: (event) => setBundlePath(event.target.value),
               spellCheck: false,
             }),
-            canPick
-              ? h('button', {
-                  style: C.button,
-                  onClick: async () => {
-                    const dir = await pick()
-                    if (dir) {
-                      setBundlePath(dir)
-                      load(dir)
-                    }
-                  },
-                }, t('browse'))
-              : null,
-            h('button', { style: C.button, onClick: () => bundlePath && load(bundlePath) }, t('loadPreview')),
+            h('button', { style: C.button, onClick: browseFolder }, t('browseFolder')),
+          scanned && scanned.bundles.length > 0
+            ? h('div', { style: { ...C.card, flexBasis: '100%', marginTop: 8 } },
+                h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+                  h('div', { style: C.cardTitle }, t('scanTitle')),
+                  h('button', {
+                    style: C.linkButton,
+                    onClick: () => setScanCollapsed((value) => !value),
+                  }, scanCollapsed ? t('scanExpand') : t('scanClose')),
+                ),
+                scanCollapsed
+                  ? null
+                  : h(
+                      'div',
+                      { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 170, overflowY: 'auto' } },
+                        ...scanned.bundles.map((bundle) => {
+                          const fullyImported = bundle.total > 0 && bundle.existing >= bundle.total
+                          return h('label', {
+                            key: bundle.path,
+                            style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' },
+                            title: bundle.path,
+                          },
+                            h('input', {
+                              type: 'checkbox',
+                              checked: scanPicked.has(bundle.path),
+                              onChange: () => {
+                                const next = new Set(scanPicked)
+                                if (next.has(bundle.path)) next.delete(bundle.path)
+                                else next.add(bundle.path)
+                                setScanPicked(next)
+                                setMulti(null)
+                                if (next.size === 1 && next.has(bundle.path)) setBundlePath(bundle.path)
+                              },
+                            }),
+                            h('span', { style: { ...C.mono, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' },
+                              fontWeight: bundle.path === bundlePath ? 600 : 400 },
+                              bundle.name),
+                            h('span', { style: C.hint }, `${bundle.sessions} ${t('sessions')} · ${fmtBytes(bundle.bytes || 0)}`),
+                            fullyImported
+                              ? h('span', { style: C.ok }, t('scanImported'))
+                              : bundle.existing > 0
+                                ? h('span', { style: C.warn }, t('scanPartial').replace('{n}', `${bundle.existing}/${bundle.total}`))
+                                : null,
+                          )
+                        }),
+                      ),
+                      h('span', { style: C.hint }, t('scanHint')),
+                    ),
+              )
+            : null,
           ),
           h(
             'div',
@@ -1239,63 +1663,7 @@ window.__ModuleLoader__.load({
                 'div',
                 { style: { display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 6 } },
                 h('div', { style: C.cardTitle }, t('sessionsDiff')),
-                ...(check.comparisons || []).slice(0, 8).map((entry) => {
-                  const view = verdictView(t, entry)
-                  const choice =
-                    entry.verdict === 'packAhead'
-                      ? sessionChoices[entry.id] || 'append'
-                      : entry.verdict === 'diverged'
-                        ? sessionChoices[entry.id] || 'fork'
-                        : 'skip'
-                  const options =
-                    entry.verdict === 'packAhead'
-                      ? [
-                          ['append', t('choiceAppend')],
-                          ['skip', t('choiceSkip')],
-                        ]
-                      : entry.verdict === 'diverged'
-                        ? [
-                            ['fork', t('choiceFork')],
-                            ['skip', t('choiceSkip')],
-                          ]
-                        : []
-                  return h(
-                    'div',
-                    { key: entry.id, style: { display: 'flex', flexDirection: 'column', gap: 2, paddingBottom: 4 } },
-                    h(
-                      'div',
-                      { style: { ...view.style, display: 'flex', gap: 8, alignItems: 'baseline' } },
-                      h('span', { style: { flex: 1, wordBreak: 'break-all' } }, entry.title),
-                      h('span', { style: { opacity: 0.75, whiteSpace: 'nowrap' } }, view.label),
-                    ),
-                    options.length > 0
-                      ? h(
-                          'div',
-                          { style: { display: 'flex', gap: 6, paddingLeft: 2 } },
-                          ...options.map(([value, label]) =>
-                            h(
-                              'button',
-                              {
-                                key: value,
-                                style: {
-                                  ...C.linkButton,
-                                  fontWeight: choice === value ? 600 : 400,
-                                  textDecoration: choice === value ? 'underline' : 'none',
-                                  color:
-                                    value === 'replace' && choice === value
-                                      ? 'var(--dsw-alias-state-error-primary)'
-                                      : 'var(--dsw-alias-label-secondary)',
-                                },
-                                onClick: () =>
-                                  setSessionChoices({ ...sessionChoices, [entry.id]: value }),
-                              },
-                              label,
-                            ),
-                          ),
-                        )
-                      : null,
-                  )
-                }),
+                ...comparisonGroups(t, check.comparisons || [], sessionChoices, setSessionChoices),
                 (check.comparisons || []).length > 8
                   ? h('div', { style: C.hint }, t('sessionsDiffMore').replace('{n}', String(check.comparisons.length - 8)))
                   : null,
@@ -1322,6 +1690,25 @@ window.__ModuleLoader__.load({
               h(Kv, { label: t('formatVersion'), value: preview.formatVersion ? `v${preview.formatVersion}` : '—' }),
               h(Kv, { label: t('sessions'), value: String(preview.sessions) }),
               h(Kv, { label: t('bytes'), value: fmtBytes(preview.bytes || 0) }),
+            )
+          : null,
+        preview
+          ? h(
+              'div',
+              { style: C.card },
+              h('div', { style: C.cardTitle }, t('crossOsTitle')),
+              h(
+                'div',
+                { style: preview.crossOs ? C.warn : C.hint },
+                preview.crossOs
+                  ? t('crossOsLine')
+                      .replace('{from}', preview.bundleStyle === 'win' ? 'Windows' : 'macOS/Linux')
+                      .replace('{to}', preview.localStyle === 'win' ? 'Windows' : 'macOS/Linux')
+                  : t('crossOsOk'),
+              ),
+              preview.crossOs && preview.illegalNames > 0
+                ? h('div', { style: C.warn }, t('crossOsIllegal').replace('{n}', String(preview.illegalNames)))
+                : null,
             )
           : null,
         preview && (preview.workspaces || []).length > 0
@@ -1423,16 +1810,27 @@ window.__ModuleLoader__.load({
                       if (entry.verdict === 'packAhead') decisions[entry.id] = sessionChoices[entry.id] || 'append'
                       else if (entry.verdict === 'diverged') decisions[entry.id] = sessionChoices[entry.id] || 'fork'
                     }
-                    run('import', {
-                      bundlePath,
-                      remap,
-                      rootDir: rootDir.trim() || null,
-                      rewritePaths,
-                      includeFiles,
-                      includeAttachments,
-                      overwriteFiles,
-                      sessionDecisions: decisions,
-                    })
+                    run('import', multi && multi.length > 1
+                      ? {
+                          bundlePaths: multi.map((entry) => entry.path),
+                          remap,
+                          rootDir: rootDir.trim() || null,
+                          rewritePaths,
+                          includeFiles,
+                          includeAttachments,
+                          overwriteFiles,
+                          sessionDecisions: decisions,
+                        }
+                      : {
+                          bundlePath,
+                          remap,
+                          rootDir: rootDir.trim() || null,
+                          rewritePaths,
+                          includeFiles,
+                          includeAttachments,
+                          overwriteFiles,
+                          sessionDecisions: decisions,
+                        })
                   },
                 },
                 running ? t('importRunning') : t('startImport'),
@@ -1513,6 +1911,9 @@ window.__ModuleLoader__.load({
           h('button', { style: { ...C.tab, ...(tab === 'export' ? C.tabActive : {}) }, onClick: () => setTab('export') }, t('tabExport')),
           h('button', { style: { ...C.tab, ...(tab === 'import' ? C.tabActive : {}) }, onClick: () => setTab('import') }, t('tabImport')),
         ),
+        inventory && Number(inventory.codeVersion) < 13
+          ? h('div', { style: C.warn }, t('hostTooOld'))
+          : null,
         tab === 'export'
           ? h(ExportPane, { t, inventory, reload: load, pick, canPick })
           : h(ImportPane, { t, inventory, reload: load, pick, canPick, startSession, canInstallSession }),
@@ -1592,4 +1993,5 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
 
