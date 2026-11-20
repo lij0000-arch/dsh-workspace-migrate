@@ -3054,7 +3054,9 @@ export function apply(ctx, config = {}) {
             // Keep everything, drop the marker and renumber: the Session becomes
             // a normal, standalone conversation instead of a fork the host cannot
             // resolve on this machine.
-            events = compactEventSeq(events)
+            // Keep the event stream verbatim (see the plain-session branch below):
+            // the embedded prefix already makes the conversation complete, and the
+            // marker stays where DSH put it.
             header = { ...header, isSeeded: false, parentSession: undefined, origin: undefined, delegationDepth: undefined }
             report.flattened += 1
             report.embeddedFlattened = (report.embeddedFlattened ?? 0) + 1
@@ -3070,13 +3072,12 @@ export function apply(ctx, config = {}) {
             // carry none, and removing it leaves a hole in the sequence the host
             // checks (`seq === index`), so the merged list is renumbered and every
             // seq reference inside the events is moved along with it.
-            events = compactEventSeq([...parentEvents.slice(0, inherited), ...events])
+            events = [...parentEvents.slice(0, inherited), ...events]
             header = { ...header, isSeeded: false, parentSession: undefined, origin: undefined, delegationDepth: undefined }
             report.flattened += 1
           } else if (markerIndex === 0) {
             // The prefix was not embedded and the parent is unavailable: import
             // the branch alone, which is what the user can still open, and say so.
-            events = compactEventSeq(events)
             header = { ...header, isSeeded: false, parentSession: undefined, origin: undefined, delegationDepth: undefined }
             report.truncatedForks = (report.truncatedForks ?? 0) + 1
           } else {
@@ -3084,11 +3085,14 @@ export function apply(ctx, config = {}) {
             task.done += 1
             continue
           }
-        } else if (events.some((event) => event && event.type === 'session/end-seed')) {
-          // A plain Session must not contain seed markers either; a bundle that
-          // was produced by an older flattening pass can carry them.
-          events = compactEventSeq(events)
-          report.seedMarkersStripped = (report.seedMarkersStripped ?? 0) + 1
+        } else {
+          // Plain sessions legitimately carry `session/end-seed` markers: DSH
+          // writes one whenever a fork boundary is recorded, and a long-running
+          // conversation can hold dozens. Stripping them (and renumbering) used
+          // to leave the log subtly different from what the Host wrote, and a
+          // session whose markers were removed could no longer be continued.
+          // Import the stream exactly as it was exported.
+          report.seedMarkersPreserved = (report.seedMarkersPreserved ?? 0) + events.filter((event) => event && event.type === 'session/end-seed').length
         }
 
         // Inherited events may still name the parent Session; make them name this one.
