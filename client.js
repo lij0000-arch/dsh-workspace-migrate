@@ -1960,7 +1960,16 @@ window.__ModuleLoader__.load({
           }
         }
 
-        const dirService = (typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : null) ?? ctx.uiWorkspace ?? null
+        // uiWorkspace is an optional client service. Read it only through the
+        // optional API: touching ctx.uiWorkspace directly throws "cannot get
+        // property ... without inject" on cordis contexts that do not declare
+        // it, which used to fail the whole web boot (issue #2).
+        let dirService = null
+        try {
+          dirService = typeof ctx.get === 'function' ? ctx.get('uiWorkspace') ?? null : null
+        } catch {
+          dirService = null
+        }
         const desktopPicker = globalThis.__DSH_DIRECTORY_PICKER__
         const canPick =
           Boolean(desktopPicker && typeof desktopPicker.pick === 'function') ||
