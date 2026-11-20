@@ -7,12 +7,17 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-migrate'
     const API = '/api/dsh-migrate'
+    // 反馈渠道：插件页底部展示；打赏链接填在这里（填写后自动出现按钮）
+    const SUPPORT_EMAIL = 'lij0000@sina.com'
+    const DONATE_URL = 'https://afdian.com/a/J-Lee'
 
     const ZH = {
       title: '迁移到另一台电脑',
       subtitle: '把工作区、项目成果和对话内容打包带走，在新电脑上还原。导出在旧电脑做，导入在新电脑做。',
       tabExport: '导出（旧电脑）',
       tabImport: '导入（新电脑）',
+        supportFeedback: '问题反馈与技术交流',
+        supportDonate: '这个插件帮到你了？请我喝杯咖啡 ☕',
       projects: '工作区',
       projectsHint: '选中的工作区会连同归属的会话一起打包；子会话会自动带上。',
       selectAll: '全选',
@@ -181,6 +186,8 @@ window.__ModuleLoader__.load({
       subtitle: 'Package workspaces, project files, and conversations, then restore them on the new machine. Export on the old computer, import on the new one.',
       tabExport: 'Export (old computer)',
       tabImport: 'Import (new computer)',
+        supportFeedback: 'Feedback and technical discussion',
+        supportDonate: 'Found this useful? Buy me a coffee ☕',
       projects: 'Workspaces',
       projectsHint: 'Selected workspaces carry their sessions; sub-sessions are included automatically.',
       selectAll: 'All',
@@ -1917,6 +1924,22 @@ window.__ModuleLoader__.load({
         tab === 'export'
           ? h(ExportPane, { t, inventory, reload: load, pick, canPick })
           : h(ImportPane, { t, inventory, reload: load, pick, canPick, startSession, canInstallSession }),
+        h(
+          'div',
+          { style: { ...C.hint, paddingTop: 10, borderTop: '1px solid var(--dsw-alias-border-l1)' } },
+          h('div', {}, `${t('supportFeedback')}：${SUPPORT_EMAIL}`),
+          DONATE_URL
+            ? h(
+                'div',
+                { style: { paddingTop: 4 } },
+                h(
+                  'a',
+                  { href: DONATE_URL, target: '_blank', rel: 'noreferrer', style: { color: 'var(--dsw-alias-brand-primary)' } },
+                  t('supportDonate'),
+                ),
+              )
+            : null,
+        ),
       )
     }
 

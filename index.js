@@ -853,7 +853,10 @@ export function apply(ctx, config = {}) {
     return {
       archive: true,
       root: resolved,
-      has: async (name) => reader.has(name),
+      // A directory only appears as its entries, so `has('attachments')` must also
+      // accept a prefix match — otherwise a .dshmig bundle reports no attachments
+      // and the import silently skips them.
+      has: async (name) => reader.has(name) || reader.names().some((entry) => entry.startsWith(`${name}/`)),
       read: (name) => reader.read(name),
       list: async (prefix) => {
         const base = String(prefix).replace(/\/$/, '')
@@ -1557,13 +1560,19 @@ export function apply(ctx, config = {}) {
     const filesBytes = await dirSize(join(dir, 'files'))
     // Ship this plugin itself so the target machine can install it without a
     // separate copy; the bundle is useless there without the same plugin.
+    // Ship only the published files. Copying the whole plugin directory used to
+    // drag in dist/, docs/ and promo material — kilobytes per bundle and assets
+    // that never belong on another machine.
     try {
       const here = dirname(fileURLToPath(import.meta.url))
-      await fsp.cp(here, join(dir, 'plugin', 'dsh-migrate'), {
-        recursive: true,
-        force: true,
-        filter: (entry) => !normalKey(entry).includes('node_modules'),
-      })
+      const shipped = ['index.js', 'client.js', 'cordis.patch.yml', 'icon.svg', 'package.json', 'README.md', 'LICENSE']
+      const target = join(dir, 'plugin', 'dsh-migrate')
+      for (const name of shipped) {
+        const source = join(here, name)
+        if (!(await pathExists(source))) continue
+        await fsp.mkdir(target, { recursive: true })
+        await fsp.copyFile(source, join(target, name))
+      }
     } catch {
       /* the plugin copy is a convenience, never a reason to fail an export */
     }
@@ -2135,7 +2144,12 @@ export function apply(ctx, config = {}) {
   }
 
   function canonicalEvent(event) {
-    return stableStringify(normalizeForCompare(event))
+    // Compare content, not bookkeeping identity: a flattened fork is renumbered,
+    // so its `seq` differs from the bundle's while the conversation is identical.
+    if (!event || typeof event !== 'object') return stableStringify(event)
+    return stableStringify(
+      normalizeForCompare({ type: event.type ?? null, time: event.time ?? null, data: event.data ?? null }),
+    )
   }
 
   /** First index where two content streams disagree, for diagnostics. */
@@ -3253,13 +3267,20 @@ export function apply(ctx, config = {}) {
       options.recordSink.workspaces.push(...newWorkspaceIds)
       options.recordSink.sessions.push(...newSessionIds)
       Object.assign(options.recordSink.counts, sessionCounts)
-    } else await writeLastImport({
-      at: new Date().toISOString(),
-      bundle: dir,
-      workspaces: newWorkspaceIds,
-      sessions: newSessionIds,
-      counts: sessionCounts,
-    })
+    } else if (newWorkspaceIds.length === 0 && newSessionIds.length === 0) {
+      // A run that only appended (or only skipped) creates nothing to undo; keep
+      // the previous record so「撤销上一次导入」still knows the sessions it made.
+      const kept = await probeLastImport()
+      if (kept) report.undoKept = true
+    } else {
+      await writeLastImport({
+        at: new Date().toISOString(),
+        bundle: dir,
+        workspaces: newWorkspaceIds,
+        sessions: newSessionIds,
+        counts: sessionCounts,
+      })
+    }
     task.done += 1
     return report
   }
