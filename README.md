@@ -22,6 +22,8 @@ dsh plugin --profile desktop add dsh-workspace-migrate
 
 `--profile` 指定装进哪个 profile（桌面端是 `desktop`，`dsh web` 通常是 `web`；profile 名就是 `~/.dsh/profiles` 下的目录名）。多个 profile 各装一次即可。
 
+> 0.9.1 及更早版本存在已知缺陷：导入分叉会话后无法读取。建议直接使用 **0.10.1** 或更高版本。
+
 装完在 **设置 → 迁移到另一台电脑** 里使用。要求 DSH `>=0.2.1-rc.2 <0.3.0 || >=0.2.2-rc.1 <0.3.0 || >=0.2.3-alpha.1 <0.3.0`。
 
 ## 三步迁移
