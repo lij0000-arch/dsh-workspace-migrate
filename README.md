@@ -78,6 +78,20 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 - 跨系统的自动化测试覆盖了路径改写、分隔符转换、Windows 非法文件名清洗，但真机只有 Windows 验证过；迁到 Mac/Linux 建议先小批量试
 - 体检的准确性依赖【导入到】目录：留空时路径比对只能用启发式，带空格的旧路径可能被判成「两边都有新增」
 
+## 会话路径（本机功能）
+
+设置页新增 **「会话路径」** 标签页，用于**本机**修改会话的工作目录，和跨电脑迁移完全独立：
+
+- 列出本机所有会话及其工作目录（标题、事件数，当前会话会标出）
+- 选中一条，填新目录（可浏览），应用后：
+  - 改会话日志首行的 `cwd`
+  - 把日志目录移到新路径对应的目录下
+  - 同步投影缓存里的路径
+  - 从旧路径的工作区摘除，挂到新路径的工作区（若存在）
+  - 可选：同时改写历史消息与工具调用里提到的旧路径
+- 改动前自动备份到 `~/.dsh/trash/session-path-<时间>/`，可原样回滚
+- **改完需要完全退出 DSH 再打开**，侧栏与投影才会刷新
+
 ## 兼容模式
 
 某些会话导入后打不开，或打开后没法续聊。插件会在导入时**自动识别并处理**这类会话，不需要手动开关：
@@ -87,7 +101,7 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 | 导入后提示「会话无法读取」 | 会话由旧版 DSH 写入，新版因压缩/请求记账校验不通过而拒绝加载 |
 | 续聊报上下文超限 | 会话太长（几十万到几百万 token），整段历史装不进模型窗口 |
 
-处理方式是：丢弃压缩与请求记账、把覆盖操作改成追加、按上下文预算只保留最近若干回合，并把回合序号重新从 1 编号。**消息与工具调用都保留**，只是更早的历史不在应用里，原始迁移包仍完整保留。
+处理方式是：丢弃压缩与请求记账、把覆盖操作改成追加、按上下文预算只保留最近若干回合，并把回合序号重新从 1 编号。**会话头部（系统提示词等）始终保留**；万一头部缺失，会补一条受保护的 system/message，避免会话读回来之后聊一阵才报格式错误。消息与工具调用都保留，只是更早的历史不在应用里，原始迁移包仍完整保留。
 
 结果卡片会写明本次做了哪些调整（例如「会话过长，已只保留最近 N 个回合」）。如果某条会话确实需要完整历史，可以在旧机器上把它拆成多个会话后再分别打包。
 
@@ -98,6 +112,7 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 | 贡献 | 内容 |
 |---|---|
 | [@xinink](https://github.com/xinink) | 报告 Web 引导阶段插件加载失败（[#2](https://github.com/lij0000-arch/dsh-workspace-migrate/issues/2)），定位到 `inject` 未声明的 `uiWorkspace` 读取，已在 0.8.3 修复 |
+| [@ChexLant](https://github.com/ChexLant) | 报告展开 fork 会话后导入不可读（[#3](https://github.com/lij0000-arch/dsh-workspace-migrate/issues/3)），定位到 unseeded 会话残留 `inherited` end-seed 标记，已在 0.10.0 修复 |
 
 > 报告缺陷或提出建议被采纳后，会记在这里，同时写进对应版本的 Release 说明。
 
@@ -111,7 +126,7 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 
 ## 开发
 
-- `index.js`：Host 半边。注册 `sessionPersistence` / `workspaceRegistry` / `webServer`，在 `/api/dsh-migrate` 下提供 `inventory` / `bundle-info` / `scan` / `preview` / `check` / `export` / `import` / `task` / `rollback` / `cleanup` / `setup-workspace` / `last-import`
+- `index.js`：Host 半边。注册 `sessionPersistence` / `workspaceRegistry` / `webServer`，在 `/api/dsh-migrate` 下提供 `inventory` / `bundle-info` / `scan` / `preview` / `check` / `export` / `import` / `task` / `rollback` / `cleanup` / `setup-workspace` / `last-import`；「会话路径」是独立功能，走单独的 `/api/dsh-session-path`（`list` / `apply` / `workspace-apply` / `reconcile` / `make-fixer`）
 - `client.js`：Client 半边。注册 `settings.section` 的 `migration` 页签，纯 React 无构建
 
 本地自检脚本（不随包发布，放在仓库外的开发目录）：

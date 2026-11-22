@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-migrate",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "private": false,
   "type": "module",
   "description": "把 DeepSeek Harness 的工作区、项目成果、对话内容和插件清单整体迁到另一台电脑",
@@ -34,6 +34,7 @@
     "index.js",
     "client.js",
     "cordis.patch.yml",
+    "tools",
     "icon.svg",
     "README.md",
     "LICENSE"

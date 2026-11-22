@@ -4,6 +4,7 @@ import { homedir, hostname, platform, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { zstdDecompressSync, zstdCompressSync } from 'node:zlib'
 
 /**
  * Host half of the migration plugin: exports the three durable layers of a
@@ -373,6 +374,45 @@ export function apply(ctx, config = {}) {
     return events
   }
   /**
+   * v4 读取器要求「表层」的第一个事件是受保护的 system/message。兼容模式会裁剪、
+   * 丢弃记账事件，极端情况下头部可能整段缺失（导入后能读、聊一阵子才报
+   * "system/message requires a protected first surface head"）。这里兜底补一条：
+   * 优先复用日志里现存的 system/message 内容（通常是切换审批策略时重发的系统
+   * 提示词），插到第一个 step/start 之后，让 turn/step 上下文保持有效。
+   */
+  function ensureProtectedHead(events) {
+    const firstSurfaceIndex = events.findIndex((event) => event && event.surfaceOp !== undefined)
+    if (firstSurfaceIndex >= 0 && String(events[firstSurfaceIndex].type) === 'system/message') {
+      return { events, inserted: 0 }
+    }
+    const template = events.find((event) => event && String(event.type) === 'system/message' && event.data && event.data.message)
+    let message
+    if (template) {
+      message = JSON.parse(JSON.stringify(template.data.message))
+      message.id = randomUUID()
+    } else {
+      message = {
+        role: 'system',
+        source: { kind: 'system-prompt' },
+        content: [{ type: 'text', text: '（系统提示词未随迁移包保留）' }],
+        id: randomUUID(),
+      }
+    }
+    let stepIndex = events.findIndex((event) => event && String(event.type) === 'step/start')
+    if (stepIndex < 0 || (firstSurfaceIndex >= 0 && stepIndex > firstSurfaceIndex)) stepIndex = -1
+    const insertAt = stepIndex >= 0 ? stepIndex + 1 : 0
+    const context = (events[stepIndex >= 0 ? stepIndex : 0] || {}).data || {}
+    const inserted = {
+      type: 'system/message',
+      seq: insertAt,
+      time: Date.now(),
+      surfaceOp: 'append',
+      data: { turn: context.turn, step: context.step, message },
+    }
+    const next = [...events.slice(0, insertAt), inserted, ...events.slice(insertAt)]
+    return { events: renumberEvents(next, null), inserted: 1, usedTemplate: Boolean(template) }
+  }
+  /**
    * 会话太长时只保留最近若干回合：模型窗口装不下整段历史，硬导入的结果就是
    * 「导入成功、一发消息就 CONTEXT_WINDOW_EXCEEDED」。按 surface 文本量估算 token
    * （中文约 2 字符/token），并从 turn/start 处切，保证日志从回合边界开始。
@@ -381,17 +421,23 @@ export function apply(ctx, config = {}) {
     const turns = []
     for (let i = 0; i < events.length; i += 1) if (events[i] && events[i].type === 'turn/start') turns.push(i)
     if (turns.length === 0) return { kept: events, dropped: 0, startSeq: 0 }
+    // 第一条 turn/start 之前是「会话头部」：permission/preset、sandbox/mode、
+    // approval/policy、session/title 与 system/message。v4 格式要求表层第一个事件
+    // 必须是受保护的 system/message，头部一旦被裁掉，这条会话读回来就会报
+    // "system/message requires a protected first surface head"。所以头部永远保留，
+    // 只裁其中的回合。
+    const head = events.slice(0, turns[0])
     // 从最早的 turn 往后找「装得下的最长后缀」，而不是从最后一个 turn 往前找一个
     // 刚好装下的（那样永远只留 1 个回合）。
     // 文本量随起点后移单调下降：第一个装得下的起点就是「最长的可保留后缀」。
     for (let k = 0; k < turns.length; k += 1) {
       const suffix = events.slice(turns[k])
       if (surfaceTextLength(suffix) <= budgetChars) {
-        return { kept: suffix, dropped: turns[k], startSeq: turns[k], turns: turns.length - k }
+        return { kept: [...head, ...suffix], dropped: turns[k], startSeq: turns[k], turns: turns.length - k, headKept: head.length }
       }
     }
     const last = events.slice(turns[turns.length - 1])
-    return { kept: last, dropped: turns[turns.length - 1], startSeq: turns[turns.length - 1], turns: 1 }
+    return { kept: [...head, ...last], dropped: turns[turns.length - 1], startSeq: turns[turns.length - 1], turns: 1, headKept: head.length }
   }
   /**
    * 旧版 DSH 在压缩时会重放早先的 tool/result 等事件，它们带着旧 turn/step 却落在
@@ -1733,7 +1779,17 @@ export function apply(ctx, config = {}) {
     // narrow it down, because the list itself says which tools they run.
     let pluginsWritten = 0
     try {
-      if (options.includePlugins !== false) {
+      // `undefined` must not mean "include": incremental update requests carry no
+      // checkbox state, so an update has to keep whatever the original export
+      // decided instead of silently adding the plugin list to the bundle.
+      const pluginsFlag = options.includePlugins === true ? true : options.includePlugins === false ? false : null
+      const pluginsFile = join(dir, 'plugins.json')
+      const hadPluginsFile = await pathExists(pluginsFile)
+      const shouldWritePlugins = pluginsFlag === null ? (updating ? hadPluginsFile : true) : pluginsFlag
+      if (!shouldWritePlugins && hadPluginsFile) {
+        await fsp.rm(pluginsFile, { force: true })
+      }
+      if (shouldWritePlugins) {
         const profilePlugins = await readProfilePlugins(home)
         if (profilePlugins) {
           const keep = Array.isArray(options.pluginNames) ? new Set(options.pluginNames.map(String)) : null
@@ -1816,7 +1872,26 @@ export function apply(ctx, config = {}) {
 
   // ── import ───────────────────────────────────────────────────────────────
 
-  async function loadSessionDocument(view, meta) {
+  /**
+ * A DSH fork records its inherited boundary as `session/end-seed` with
+ * `data.inherited === true`. The Host accepts that marker only inside a seeded
+ * Session: an unseeded log that still carries it is rejected on read
+ * ("unseeded Session contains an inherited end-seed marker"). Flattened forks
+ * keep the event and its seq, and only drop the marker field.
+ */
+function stripInheritedSeedMarkers(events) {
+  let stripped = 0
+  const next = events.map((event) => {
+    if (!event || event.type !== 'session/end-seed') return event
+    const data = event.data && typeof event.data === 'object' ? event.data : null
+    if (!data || data.inherited !== true) return event
+    stripped += 1
+    const { inherited, ...rest } = data
+    return { ...event, data: rest }
+  })
+  return { events: next, stripped }
+}
+async function loadSessionDocument(view, meta) {
     const candidates = []
     if (meta.file) candidates.push(meta.file)
     candidates.push(`${safeName(meta.id)}.json.zst`, `${safeName(meta.id)}.json`)
@@ -3092,6 +3167,9 @@ export function apply(ctx, config = {}) {
                 }
                 report.rewritten += stats.count
               }
+              const strippedCopy = stripInheritedSeedMarkers(copyEvents)
+              copyEvents = strippedCopy.events
+              if (strippedCopy.stripped > 0) report.inheritedMarkersStripped = (report.inheritedMarkersStripped ?? 0) + strippedCopy.stripped
               const copyHandle = await ctx.sessionPersistence.create(copyHeader)
               try {
                 if (copyEvents.length > 0) await copyHandle.append(copyEvents)
@@ -3221,7 +3299,13 @@ export function apply(ctx, config = {}) {
             task.done += 1
             continue
           }
-        } else {
+        }
+        if (!header.isSeeded) {
+          const strippedFork = stripInheritedSeedMarkers(events)
+          events = strippedFork.events
+          if (strippedFork.stripped > 0) report.inheritedMarkersStripped = (report.inheritedMarkersStripped ?? 0) + strippedFork.stripped
+        }
+        if (!header.isSeeded) {
           // Plain sessions legitimately carry `session/end-seed` markers: DSH
           // writes one whenever a fork boundary is recorded, and a long-running
           // conversation can hold dozens. Stripping them (and renumbering) used
@@ -3312,6 +3396,12 @@ export function apply(ctx, config = {}) {
                 report.contextEstimatedTokens = Math.round(surfaceTextLength(events) / 2)
               }
             }
+            // 兜底：确认表层第一条是受保护的 system/message（缺了就补一条）。
+            const head = ensureProtectedHead(events)
+            if (head.inserted > 0) {
+              events = head.events
+              report.headInserted = (report.headInserted ?? 0) + 1
+            }
         }
         // Inherited events may still name the parent Session; make them name this one.
         events = rewriteForeignSessionIds(events, id)
@@ -3320,6 +3410,15 @@ export function apply(ctx, config = {}) {
         // Delete those keys instead of assigning them.
         for (const key of Object.keys(header)) {
           if (header[key] === undefined) delete header[key]
+        }
+        // 最后一道防线：unseeded 日志里绝不能残留 inherited end-seed 标记，
+        // 否则 DSH 整条拒读。上面任何分支（展开/合并/降级副本）都可能拼进父事件。
+        if (!header.isSeeded) {
+          const strippedFinal = stripInheritedSeedMarkers(events)
+          events = strippedFinal.events
+          if (strippedFinal.stripped > 0) {
+            report.inheritedMarkersStripped = (report.inheritedMarkersStripped ?? 0) + strippedFinal.stripped
+          }
         }
         const handle = await ctx.sessionPersistence.create(header)
         try {
@@ -3546,6 +3645,606 @@ export function apply(ctx, config = {}) {
     return report
   }
 
+  // ── 会话路径（独立功能：就地修改会话的工作目录，不涉及跨机迁移） ──────────
+  // 只读写本机 ~/.dsh 的三处：会话日志首行的 header.cwd、日志所在目录名、投影缓存。
+  // 不调用迁移的任何代码路径，也不复用迁移的导入/导出逻辑。
+  const SESSION_PATH_PREFIX = '/api/dsh-session-path'
+
+  function sessionsStoreRoot() {
+    return join(dshHome(), 'sessions')
+  }
+
+  function sessionProjCacheRoot() {
+    return join(dshHome(), 'storages', 'session_projcache', 'sessions')
+  }
+
+  /** 把会话的工作目录编码成 DSH 的目录名：冒号丢弃、分隔符换 -、空格与汉字转 ~XXXX。 */
+  function encodeSessionDirName(cwd) {
+    let out = ''
+    for (const ch of String(cwd)) {
+      if (ch === ':') continue
+      if (ch === '\\' || ch === '/') {
+        out += '-'
+        continue
+      }
+      if (/[A-Za-z0-9._-]/.test(ch)) {
+        out += ch
+        continue
+      }
+      if (ch === ' ') {
+        out += '~0020'
+        continue
+      }
+      out += '~' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')
+    }
+    return `--${out}--`
+  }
+
+  /** zstd 帧长度：会话日志是多个帧拼接，改首行需要能定位每一帧。 */
+  function zstdFrameLength(buffer, offset) {
+    if (buffer.readUInt32LE(offset) !== 0xFD2FB528) throw new Error('会话日志不是 zstd 格式')
+    let pointer = offset + 4
+    const descriptor = buffer[pointer]
+    pointer += 1
+    const fcsFlag = descriptor >> 6
+    const singleSegment = (descriptor >> 5) & 1
+    const checksum = (descriptor >> 2) & 1
+    const dictFlag = descriptor & 3
+    if (!singleSegment) pointer += 1
+    pointer += [0, 1, 2, 4][dictFlag]
+    pointer += fcsFlag === 0 ? (singleSegment ? 1 : 0) : [0, 2, 4, 8][fcsFlag]
+    for (;;) {
+      const header = buffer[pointer] | (buffer[pointer + 1] << 8) | (buffer[pointer + 2] << 16)
+      pointer += 3
+      const last = header & 1
+      const type = (header >> 1) & 3
+      const size = header >>> 3
+      pointer += type === 1 ? 1 : size
+      if (last) break
+    }
+    if (checksum) pointer += 4
+    return pointer - offset
+  }
+
+  /** 解出会话日志的全部帧，按行拼成文本。 */
+  function decodeSessionLog(buffer) {
+    const chunks = []
+    let offset = 0
+    let frames = 0
+    while (offset < buffer.length) {
+      const length = zstdFrameLength(buffer, offset)
+      chunks.push(zstdDecompressSync(buffer.subarray(offset, offset + length)))
+      offset += length
+      frames += 1
+    }
+    return { text: Buffer.concat(chunks).toString('utf8'), frames }
+  }
+
+  /** 会话 id → 日志目录。 */
+  async function sessionDirsById() {
+    const root = sessionsStoreRoot()
+    const map = new Map()
+    let projects = []
+    try {
+      projects = await fsp.readdir(root, { withFileTypes: true })
+    } catch {
+      return map
+    }
+    for (const project of projects) {
+      if (!project.isDirectory()) continue
+      let entries = []
+      try {
+        entries = await fsp.readdir(join(root, project.name), { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        map.set(entry.name, join(root, project.name, entry.name))
+      }
+    }
+    return map
+  }
+
+  async function sessionMetaFromCache(id) {
+    try {
+      const raw = await fsp.readFile(join(sessionProjCacheRoot(), `${id}.json`), 'utf8')
+      const parsed = JSON.parse(raw)
+      const rows = parsed?.record?.rows ?? {}
+      const titleCell = rows.title
+      const title = titleCell && typeof titleCell === 'object' && typeof titleCell.val === 'string'
+        ? titleCell.val
+        : typeof titleCell === 'string'
+          ? titleCell
+          : ''
+      const metaCell = rows.sessionListMetadata
+      const metaVal = metaCell && typeof metaCell === 'object' && metaCell.val && typeof metaCell.val === 'object' ? metaCell.val : null
+      const blank = metaVal && typeof metaVal.blank === 'boolean' ? metaVal.blank : null
+      const lastPromptAt = metaVal && typeof metaVal.lastPromptAt === 'number' ? metaVal.lastPromptAt : null
+      return { title, blank, lastPromptAt }
+    } catch {
+      return { title: '', blank: null, lastPromptAt: null }
+    }
+  }
+
+  async function sessionPathRows() {
+    const snapshots = await ctx.sessionPersistence.list()
+    const dirs = await sessionDirsById()
+    const workspaces = ctx.workspaceRegistry.list().map((workspace) => ({
+      id: String(workspace.id),
+      path: workspace.path,
+      title: workspace.title,
+    }))
+    const liveId = process.env.DSH_SESSION_ID ? String(process.env.DSH_SESSION_ID) : null
+    const archived = new Set((ctx.workspaceRegistry.archivedSessionIds ?? []).map(String))
+    const rows = []
+    for (const snapshot of snapshots) {
+      const id = String(snapshot.header.id)
+      // 空会话 / 目录已丢失的会话不展示：既占地方也容易误操作
+      if (!dirs.has(id)) continue
+      if (typeof snapshot.eventCount === 'number' && snapshot.eventCount === 0) continue
+      // 子代理会话：侧栏不显示（属于父会话），这里也不列
+      if (snapshot.header.origin === 'subagent' || snapshot.header.parentSession) continue
+      // 已归档的会话不列
+      if (archived.has(id)) continue
+      const cwd = snapshot.header.cwd ? String(snapshot.header.cwd) : ''
+      const meta = await sessionMetaFromCache(id)
+      // 空会话（DSH 自己标记 blank）直接不展示
+      if (meta.blank === true) continue
+      rows.push({
+        id,
+        cwd,
+        title: meta.title,
+        createdAt: snapshot.header.createdAt ?? null,
+        events: snapshot.eventCount ?? null,
+        hasDir: dirs.has(id),
+        live: liveId !== null && liveId === id,
+        workspaceId: workspaces.find((workspace) => normalKey(workspace.path) === normalKey(cwd))?.id ?? null,
+      })
+    }
+    rows.sort((a, b) => String(a.cwd).localeCompare(String(b.cwd)) || String(a.title).localeCompare(String(b.title)))
+    // 按工作目录分组：界面按「项目/工作区」展示，支持整体更换或单条更换
+    const groups = []
+    const byCwd = new Map()
+    for (const row of rows) {
+      const key = normalKey(row.cwd)
+      let group = byCwd.get(key)
+      if (!group) {
+        const workspace = workspaces.find((item) => normalKey(item.path) === key) || null
+        group = {
+          cwd: row.cwd,
+          title: workspace ? workspace.title : row.cwd ? basename(row.cwd) : '',
+          workspaceId: workspace ? workspace.id : null,
+          sessions: [],
+        }
+        byCwd.set(key, group)
+        groups.push(group)
+      }
+      group.sessions.push(row)
+    }
+    return { home: dshHome(), groups, sessions: rows, workspaces }
+  }
+
+  /** 若已有会话位于目标 cwd，复用它的目录名，避免编码差异导致同一 cwd 出现两个目录。 */
+  async function sessionDirNameForCwd(cwd) {
+    const snapshots = await ctx.sessionPersistence.list()
+    const dirs = await sessionDirsById()
+    for (const snapshot of snapshots) {
+      if (normalKey(snapshot.header.cwd ?? '') !== normalKey(cwd)) continue
+      const dir = dirs.get(String(snapshot.header.id))
+      if (dir) return basename(dirname(dir))
+    }
+    return encodeSessionDirName(cwd)
+  }
+
+  function replaceStringsInJson(value, from, to) {
+    if (typeof value === 'string') return value.split(from).join(to)
+    if (Array.isArray(value)) return value.map((item) => replaceStringsInJson(item, from, to))
+    if (value && typeof value === 'object') {
+      const out = {}
+      for (const [key, item] of Object.entries(value)) out[key] = replaceStringsInJson(item, from, to)
+      return out
+    }
+    return value
+  }
+
+  async function moveSessionCwd(body) {
+    const sessionId = String(body?.sessionId ?? '')
+    const newCwdRaw = String(body?.newCwd ?? '').trim()
+    const rewritePathRefs = body?.rewritePaths === true
+    const skipWorkspace = body?.skipWorkspace === true
+    if (!sessionId) throw new Error('缺少会话 id')
+    if (!newCwdRaw) throw new Error('缺少新路径')
+    const newCwd = resolve(newCwdRaw)
+    if (!(await pathExists(newCwd))) throw new Error(`目标目录不存在：${newCwd}`)
+    const targetStat = await fsp.stat(newCwd)
+    if (!targetStat.isDirectory()) throw new Error(`目标不是目录：${newCwd}`)
+    if (process.env.DSH_SESSION_ID && String(process.env.DSH_SESSION_ID) === sessionId) {
+      throw new Error('不能修改当前正在使用的会话')
+    }
+    const snapshots = await ctx.sessionPersistence.list()
+    const snapshot = snapshots.find((item) => String(item.header.id) === sessionId)
+    if (!snapshot) throw new Error('找不到该会话')
+    const oldCwd = snapshot.header.cwd ? String(snapshot.header.cwd) : ''
+    if (!oldCwd) throw new Error('该会话没有记录工作目录')
+    if (normalKey(oldCwd) === normalKey(newCwd)) throw new Error('新旧路径相同')
+    const dirs = await sessionDirsById()
+    const sourceDir = dirs.get(sessionId)
+    if (!sourceDir) throw new Error('找不到会话日志目录（可能已被移走）')
+    const logFile = join(sourceDir, 'session.v4.jsonl.zstd')
+    if (!(await pathExists(logFile))) throw new Error('会话日志文件不存在')
+
+    // 1) 备份（可逐字节回滚）
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupDir = join(dshHome(), 'trash', `session-path-${stamp}`, sessionId)
+    await fsp.mkdir(backupDir, { recursive: true })
+    await fsp.copyFile(logFile, join(backupDir, 'session.v4.jsonl.zstd'))
+    const cacheFile = join(sessionProjCacheRoot(), `${sessionId}.json`)
+    const cacheExists = await pathExists(cacheFile)
+    if (cacheExists) await fsp.copyFile(cacheFile, join(backupDir, 'projcache.json'))
+
+    // 2) 改日志首行 header.cwd（可选：同时改写事件里的旧路径）
+    const buffer = await fsp.readFile(logFile)
+    const { text, frames } = decodeSessionLog(buffer)
+    const lines = text.split('\n')
+    const headerIndex = lines.findIndex((line) => line.trim().length > 0)
+    if (headerIndex < 0) throw new Error('会话日志为空')
+    const header = JSON.parse(lines[headerIndex])
+    header.cwd = newCwd
+    lines[headerIndex] = JSON.stringify(header)
+    let rewritten = 0
+    if (rewritePaths) {
+      const stats = { count: 0 }
+      const pairs = [{ from: oldCwd, to: newCwd, toStyle: styleOfPlatform(platform()) }]
+      for (let index = 0; index < lines.length; index += 1) {
+        if (index === headerIndex || !lines[index].trim()) continue
+        let event
+        try {
+          event = JSON.parse(lines[index])
+        } catch {
+          continue
+        }
+        if (event && event.data && typeof event.data === 'object') {
+          event.data = rewritePaths(event.data, pairs, stats)
+          lines[index] = JSON.stringify(event)
+        }
+      }
+      rewritten = stats.count
+    }
+    // DSH 要求「第一帧 = 且仅 = 一行 header」，其余事件另起帧；否则整条日志被判损坏、会话不再出现在列表里
+    const headerText = lines[headerIndex].endsWith('\n') ? lines[headerIndex] : `${lines[headerIndex]}\n`
+    const bodyLines = lines.slice(headerIndex + 1).filter((line) => line.trim().length > 0)
+    const bodyText = bodyLines.length > 0 ? `${bodyLines.join('\n')}\n` : ''
+    const firstFrame = zstdCompressSync(Buffer.from(headerText, 'utf8'))
+    const restFrames = bodyText.length > 0 ? zstdCompressSync(Buffer.from(bodyText, 'utf8')) : Buffer.alloc(0)
+    const tempFile = `${logFile}.tmp-${randomUUID()}`
+    await fsp.writeFile(tempFile, Buffer.concat([firstFrame, restFrames]))
+    await fsp.rename(tempFile, logFile)
+
+    // 3) 移动日志目录到新的 encoded cwd 下
+    const destDirName = encodeSessionDirName(newCwd)
+    const destParent = join(sessionsStoreRoot(), destDirName)
+    await fsp.mkdir(destParent, { recursive: true })
+    const destDir = join(destParent, sessionId)
+    let moved = false
+    if (normalKey(destDir) !== normalKey(sourceDir)) {
+      if (await pathExists(destDir)) throw new Error(`目标目录下已存在同名会话：${destDir}`)
+      await fsp.rename(sourceDir, destDir)
+      moved = true
+    }
+
+    // 4) 投影缓存里的 cwd 一起改
+    let cachePatched = false
+    if (cacheExists) {
+      try {
+        const raw = await fsp.readFile(cacheFile, 'utf8')
+        const patched = replaceStringsInJson(JSON.parse(raw), oldCwd, newCwd)
+        await fsp.writeFile(cacheFile, JSON.stringify(patched, null, 2))
+        cachePatched = true
+      } catch {
+        /* 缓存改不动不影响会话本身 */
+      }
+    }
+
+    // 5) 工作区归属：从旧路径的工作区摘掉，挂到新路径的工作区（若存在）
+    let fromWorkspace = null
+    let toWorkspace = null
+    if (!skipWorkspace) try {
+      const oldWorkspace = await ctx.workspaceRegistry.resolveByPath(oldCwd)
+      const newWorkspace = await ctx.workspaceRegistry.resolveByPath(newCwd)
+      if (oldWorkspace) {
+        fromWorkspace = String(oldWorkspace.id)
+        await oldWorkspace.detachSession(sessionId).catch(() => {})
+      }
+      if (newWorkspace) {
+        toWorkspace = String(newWorkspace.id)
+        await newWorkspace.attachSession(sessionId).catch(() => {})
+      }
+    } catch {
+      /* 工作区归属是加分项，失败不报错 */
+    }
+
+    await recordMovedSessions(newCwd, [sessionId])
+    return {
+      ok: true,
+      sessionId,
+      oldCwd,
+      newCwd,
+      frames,
+      rewritten,
+      cachePatched,
+      backupDir,
+      dir: destDir,
+      moved,
+      fromWorkspace,
+      toWorkspace,
+      requiresRestart: true,
+    }
+  }
+
+  function pathMoveJournalFile() {
+    return join(dshHome(), 'storages', 'dsh-migrate-path-moves.json')
+  }
+
+  /** 记录被搬动的会话，供重启后重新挂到工作区（运行中宿主的工作区索引不会立刻更新）。 */
+  async function recordMovedSessions(newCwd, sessionIds) {
+    if (!Array.isArray(sessionIds) || sessionIds.length === 0) return
+    try {
+      const file = pathMoveJournalFile()
+      let entries = []
+      try {
+        entries = JSON.parse(await fsp.readFile(file, 'utf8'))
+      } catch {
+        entries = []
+      }
+      entries.push({ at: new Date().toISOString(), newCwd, sessionIds: sessionIds.map(String) })
+      await fsp.mkdir(dirname(file), { recursive: true })
+      await fsp.writeFile(file, JSON.stringify(entries, null, 2))
+    } catch {
+      /* 记账失败不影响移动本身 */
+    }
+  }
+
+  /**
+   * 宿主启动后把 journal 里记录的会话重新挂到新路径的工作区。
+   * 运行中改日志头不会刷新宿主的工作区索引，attachSession 会被拒绝；重启后索引重建，
+   * 这里调用就能成功，会话也会重新出现在侧栏对应工作区里。
+   */
+  async function reconcileMovedSessions() {
+    const file = pathMoveJournalFile()
+    let entries = []
+    try {
+      entries = JSON.parse(await fsp.readFile(file, 'utf8'))
+    } catch {
+      return
+    }
+    if (!Array.isArray(entries) || entries.length === 0) return
+    const snapshots = await ctx.sessionPersistence.list()
+    const byId = new Map(snapshots.map((snapshot) => [String(snapshot.header.id), snapshot]))
+    const remaining = []
+    let attached = 0
+    for (const entry of entries) {
+      const newCwd = String(entry.newCwd ?? '')
+      const ids = (Array.isArray(entry.sessionIds) ? entry.sessionIds : []).filter((id) => byId.has(String(id)))
+      if (!newCwd || ids.length === 0) continue
+      let workspace = null
+      try {
+        workspace = await ctx.workspaceRegistry.resolveByPath(newCwd)
+        if (!workspace) workspace = await ctx.workspaceRegistry.create(newCwd, basename(newCwd))
+      } catch {
+        workspace = null
+      }
+      if (!workspace) {
+        remaining.push(entry)
+        continue
+      }
+      for (const id of ids) {
+        if (String(byId.get(String(id)).header.cwd ?? '') !== newCwd) continue
+        try {
+          await workspace.attachSession(id)
+          attached += 1
+        } catch {
+          /* 留待下次启动再试 */
+        }
+      }
+    }
+    try {
+      if (remaining.length === 0) await fsp.rm(file, { force: true })
+      else await fsp.writeFile(file, JSON.stringify(remaining, null, 2))
+    } catch {
+      /* ignore */
+    }
+    if (attached > 0) ctx.logger?.info?.(`[dsh-migrate] 已把 ${attached} 个会话重新挂到新路径的工作区`)
+    return { attached }
+  }
+
+  /**
+   * 按 cwd 把「没挂在工作区上」的会话补挂回去。用于路径改过之后侧栏看不到会话的情况：
+   * 工作区按路径匹配，会话日志头已指向新路径，但注册表里没登记 sessionIds。
+   */
+  async function reconcileAllWorkspaces() {
+    const snapshots = await ctx.sessionPersistence.list()
+    const workspaces = ctx.workspaceRegistry.list()
+    const byPath = new Map(workspaces.map((workspace) => [normalKey(workspace.path), workspace]))
+    let attached = 0
+    let matched = 0
+    const errors = []
+    const touched = new Set()
+    for (const snapshot of snapshots) {
+      const id = String(snapshot.header.id)
+      const cwd = snapshot.header.cwd ? String(snapshot.header.cwd) : ''
+      if (!cwd) continue
+      const workspace = byPath.get(normalKey(cwd))
+      if (!workspace) continue
+      matched += 1
+      if ((workspace.sessionIds || []).some((existing) => String(existing) === id)) continue
+      try {
+        await workspace.attachSession(id)
+        attached += 1
+        touched.add(String(workspace.id))
+      } catch (error) {
+        if (errors.length < 3) errors.push(`${id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return { attached, matched, sessions: snapshots.length, workspaces: [...touched], errors }
+  }
+  /** 复制目录树（用于「换个路径」时把项目文件一起带过去）。 */
+  async function copyTree(from, to) {
+    const stats = { files: 0, bytes: 0 }
+    const walk = async (source, target) => {
+      await fsp.mkdir(target, { recursive: true })
+      let entries = []
+      try {
+        entries = await fsp.readdir(source, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const src = join(source, entry.name)
+        const dst = join(target, entry.name)
+        if (entry.isDirectory()) {
+          await walk(src, dst)
+        } else if (entry.isFile()) {
+          try {
+            const info = await fsp.stat(src)
+            await fsp.copyFile(src, dst)
+            stats.files += 1
+            stats.bytes += info.size
+          } catch {
+            /* 单个文件失败跳过 */
+          }
+        }
+      }
+    }
+    await walk(from, to)
+    return stats
+  }
+  /**
+   * 把「离线修复」脚本和批处理摆到 ~/.dsh/storages 下，方便用户在 DSH 关闭后一键运行。
+   * 运行中宿主不会刷新工作区登记表，只有关闭后改文件才生效。
+   */
+  async function ensureOfflineFixTool(force = false) {
+    const dir = join(dshHome(), 'storages')
+    const script = join(dir, 'dsh-migrate-fix-workspace.mjs')
+    const bat = join(dir, 'dsh-migrate-fix-workspace.bat')
+    try {
+      await fsp.mkdir(dir, { recursive: true })
+      const source = join(dirname(fileURLToPath(import.meta.url)), 'tools', 'fix-workspace-sessions.mjs')
+      if (force || !(await pathExists(script))) {
+        await fsp.copyFile(source, script)
+      }
+      if (force || !(await pathExists(bat))) {
+        const lines = [
+          '@echo off',
+          'chcp 65001 >nul',
+          'tasklist /FI "IMAGENAME eq DeepSeek Harness.exe" | find /I "DeepSeek Harness.exe" >nul && (',
+          '  echo 检测到 DSH 仍在运行，请先完全退出（含托盘）再运行本脚本。',
+          '  pause',
+          '  exit /b 1',
+          ')',
+          `"${process.execPath}" "${script}"`,
+          'pause',
+        ]
+        await fsp.writeFile(bat, lines.join('\r\n'))
+      }
+      return { script, bat }
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+  async function moveWorkspaceCwd(body) {
+    const fromCwd = resolve(String(body?.cwd ?? '').trim())
+    const newCwdRaw = String(body?.newCwd ?? '').trim()
+    const rewritePathRefs = body?.rewritePaths === true
+    if (!fromCwd) throw new Error('缺少原工作目录')
+    if (!newCwdRaw) throw new Error('缺少新路径')
+    const newCwd = resolve(newCwdRaw)
+    if (!(await pathExists(newCwd))) throw new Error(`目标目录不存在：${newCwd}`)
+    const snapshots = await ctx.sessionPersistence.list()
+    const targets = snapshots.filter((snapshot) => normalKey(snapshot.header.cwd ?? '') === normalKey(fromCwd))
+    if (targets.length === 0) throw new Error('这个目录下没有会话')
+    if (normalKey(fromCwd) === normalKey(newCwd)) throw new Error('新旧路径相同')
+    const liveId = process.env.DSH_SESSION_ID ? String(process.env.DSH_SESSION_ID) : null
+    if (liveId && targets.some((snapshot) => String(snapshot.header.id) === liveId)) {
+      throw new Error('这个工作区包含当前正在使用的会话，不能整体更换')
+    }
+    const results = []
+    let rewritten = 0
+    for (const snapshot of targets) {
+      const one = await moveSessionCwd({
+        sessionId: String(snapshot.header.id),
+        newCwd,
+        rewritePaths: rewritePathRefs,
+        skipWorkspace: true,
+      })
+      results.push(one)
+      rewritten += one.rewritten || 0
+    }
+    // 可选：把项目文件一起带过去（默认由前端传入）
+    let filesCopied = 0
+    if (body?.moveFiles === true) {
+      const copied = await copyTree(fromCwd, newCwd)
+      filesCopied = copied.files
+    }
+    // 工作区登记：新路径建（或复用）一个工作区，把会话挂上去，再删掉旧登记
+    let workspace = null
+    try {
+      const oldWorkspace = await ctx.workspaceRegistry.resolveByPath(fromCwd)
+      const title = oldWorkspace ? oldWorkspace.title : basename(newCwd)
+      const next = await ctx.workspaceRegistry.create(newCwd, title)
+      for (const one of results) await next.attachSession(one.sessionId).catch(() => {})
+      if (oldWorkspace && String(oldWorkspace.id) !== String(next.id)) {
+        await ctx.workspaceRegistry.delete(oldWorkspace.id).catch(() => {})
+      }
+      workspace = { id: String(next.id), title: next.title, removed: oldWorkspace ? String(oldWorkspace.id) : null }
+    } catch {
+      /* 工作区登记失败不影响日志迁移 */
+    }
+    await recordMovedSessions(newCwd, results.map((one) => one.sessionId))
+    return { ok: true, fromCwd, newCwd, sessions: results.length, rewritten, filesCopied, workspace, requiresRestart: true }
+  }
+  async function sessionPathHandler(req, res) {
+    const auth = authenticate(req)
+    if (auth.status) {
+      const message =
+        auth.reason === 'unavailable'
+          ? '宿主未提供 connection 认证服务，已拒绝处理'
+          : auth.status === 401
+            ? '需要先在 Harness 中登录（缺少或无效的浏览器凭据）'
+            : '拒绝跨站请求'
+      sendJson(res, auth.status, { error: message })
+      return
+    }
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const route = url.pathname.slice(SESSION_PATH_PREFIX.length) || '/'
+    try {
+      if (req.method === 'GET' && route === '/list') {
+        const rows = await sessionPathRows()
+        sendJson(res, 200, { ...rows, fixTool: await ensureOfflineFixTool() })
+        return
+      }
+      if (req.method === 'POST' && route === '/make-fixer') {
+        sendJson(res, 200, await ensureOfflineFixTool(true))
+        return
+      }
+      if (req.method === 'POST' && route === '/apply') {
+        sendJson(res, 200, await moveSessionCwd(await readJson(req)))
+        return
+      }
+      if (req.method === 'POST' && route === '/workspace-apply') {
+        sendJson(res, 200, await moveWorkspaceCwd(await readJson(req)))
+        return
+      }
+      if (req.method === 'POST' && route === '/reconcile') {
+        sendJson(res, 200, await reconcileAllWorkspaces())
+        return
+      }
+      sendJson(res, 404, { error: '未知接口' })
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   // ── HTTP surface ─────────────────────────────────────────────────────────
 
   function sendJson(res, status, value) {
@@ -3597,6 +4296,12 @@ export function apply(ctx, config = {}) {
   }
 
   async function handler(req, res) {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    // 会话路径是独立功能：命中它的前缀就交给自己的处理函数，与迁移路由互不干扰
+    if (url.pathname === SESSION_PATH_PREFIX || url.pathname.startsWith(`${SESSION_PATH_PREFIX}/`)) {
+      await sessionPathHandler(req, res)
+      return
+    }
     const auth = authenticate(req)
     if (auth.status) {
       const message =
@@ -3608,7 +4313,6 @@ export function apply(ctx, config = {}) {
       sendJson(res, auth.status, { error: message })
       return
     }
-    const url = new URL(req.url ?? '/', 'http://localhost')
     const route = url.pathname.slice(ROUTE_PREFIX.length) || '/'
     try {
       if (req.method === 'GET' && route === '/inventory') {
@@ -3684,7 +4388,40 @@ export function apply(ctx, config = {}) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
     }
   }
+  // 启动后把上次搬动过、但运行中没能挂上工作区的会话补挂一次（重启后索引已重建）
+  ctx.effect(() => {
+    // 启动时服务可能还没完全就绪：隔几秒重试几次，并把结果写到日志，便于排查
+    const logFile = join(dshHome(), 'storages', 'dsh-migrate-reconcile.log')
+    const writeLog = async (line) => {
+      try {
+        await fsp.mkdir(dirname(logFile), { recursive: true })
+        await fsp.appendFile(logFile, `${new Date().toISOString()} ${line}\n`)
+      } catch {
+        /* ignore */
+      }
+    }
+    const run = async (attempt) => {
+      try {
+        const moved = await reconcileMovedSessions()
+        const all = await reconcileAllWorkspaces()
+        await writeLog(`attempt ${attempt}: journal-attached=${moved?.attached ?? 0} workspace-attached=${all.attached} matched=${all.matched} sessions=${all.sessions} errors=${(all.errors || []).join(' | ') || 'none'}`)
+        return all.attached
+      } catch (error) {
+        await writeLog(`attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`)
+        return 0
+      }
+    }
+    ;(async () => {
+      for (const [index, delay] of [1500, 4000, 10000, 20000].entries()) {
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        const attached = await run(index + 1)
+        if (attached > 0 && index >= 1) break
+      }
+    })().catch(() => {})
+  })
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }))
+  // 会话路径是独立功能：单独的前缀与处理函数，handler 内部按前缀分派
+  ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: SESSION_PATH_PREFIX, handler }))
   ctx.effect(() => () => {
     tasks.clear()
   })

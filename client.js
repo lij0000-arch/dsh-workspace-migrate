@@ -12,6 +12,36 @@ window.__ModuleLoader__.load({
       title: '迁移到另一台电脑',
       subtitle: '把工作区、项目成果和对话内容打包带走，在新电脑上还原。导出在旧电脑做，导入在新电脑做。',
       tabExport: '导出（旧电脑）',
+      tabPaths: '会话路径',
+      pathsHint: '就地修改本机会话的工作目录：把会话头、日志目录与投影缓存一起改到新路径。这是本机功能，不涉及跨电脑迁移。',
+      pathsSearch: '按标题或路径筛选',
+      pathsRefresh: '刷新',
+      pathsRepair: '修复归属',
+      pathsFixToolHint: '若重启后侧栏仍看不到会话：完全退出 DSH，然后双击 {path}（把会话补登记到工作区），再打开 DSH。',
+      pathsRepairOffline: '没有可在线补挂的会话。请完全退出 DSH 后双击 storages 下的 dsh-migrate-fix-workspace.bat，再打开 DSH。',
+      pathsRepaired: '已把 {n} 个会话重新挂回工作区（重启 DSH 后侧栏才会刷新）',
+      pathsLoading: '加载中…',
+      pathsEmpty: '没有匹配的会话',
+      pathsUntitled: '（无标题）',
+      pathsLive: '当前会话',
+      pathsNoCwd: '（未记录工作目录）',
+      pathsGroupCount: '{n} 个会话',
+      pathsCollapseHint: '点击展开 / 折叠该工作区',
+      pathsMoveFiles: '同时把项目文件复制到新路径',
+      pathsMoveFilesHint: '会把这个目录下的文件复制到新路径（不删除原目录）。',
+      pathsFilesCopied: '（复制 {n} 个文件）',
+      pathsMoveAll: '整体更换',
+      pathsWorkspaceHint: '将把这个目录下的 {n} 个会话一起换到新路径',
+      pathsNewPath: '新的工作目录',
+      pathsBrowse: '浏览…',
+      pathsRewrite: '同时改写对话里提到的旧路径',
+      pathsRewriteHint: '会改写历史消息与工具调用里的旧路径字符串，续聊时模型才能找到新位置的文件。',
+      pathsApply: '应用修改',
+      pathsApplying: '处理中…',
+      pathsDone: '已修改：{from} → {to}',
+      pathsRewritten: '（改写 {n} 处路径）',
+      pathsRestart: '请完全退出 DSH 后重新打开，侧栏与投影才会生效。',
+      pathsRestartShort: '修改后需重启 DSH 生效',
       tabImport: '导入（新电脑）',
       projects: '工作区',
       projectsHint: '选中的工作区会连同归属的会话一起打包；子会话会自动带上。',
@@ -186,6 +216,36 @@ window.__ModuleLoader__.load({
       title: 'Migrate to another computer',
       subtitle: 'Package workspaces, project files, and conversations, then restore them on the new machine. Export on the old computer, import on the new one.',
       tabExport: 'Export (old computer)',
+      tabPaths: 'Session paths',
+      pathsHint: 'Change a local Session working directory in place: the header, the log directory and the projection cache all move to the new path. Local-only feature, unrelated to machine-to-machine migration.',
+      pathsSearch: 'Filter by title or path',
+      pathsCollapseHint: 'Click to expand or collapse this workspace',
+      pathsMoveFiles: 'Also copy project files to the new path',
+      pathsFixToolHint: 'If the sidebar still misses Sessions after a restart: quit DSH completely, double-click {path} to register them, then reopen DSH.',
+      pathsRepairOffline: 'Nothing could be reattached live. Quit DSH, run dsh-migrate-fix-workspace.bat from the storages folder, then reopen DSH.',
+      pathsMoveFilesHint: 'Copies files under this directory to the new path (the original directory is kept).',
+      pathsRepair: 'Repair',
+      pathsRepaired: 'Reattached {n} Sessions to their workspaces (restart DSH for the sidebar to refresh)',
+      pathsFilesCopied: ' ({n} files copied)',
+      pathsRefresh: 'Refresh',
+      pathsLoading: 'Loading…',
+      pathsEmpty: 'No matching Session',
+      pathsGroupCount: '{n} Sessions',
+      pathsMoveAll: 'Move all',
+      pathsWorkspaceHint: 'Move all {n} Sessions under this directory to the new path',
+      pathsUntitled: '(untitled)',
+      pathsLive: 'current Session',
+      pathsNoCwd: '(no working directory recorded)',
+      pathsNewPath: 'New working directory',
+      pathsBrowse: 'Browse…',
+      pathsRewrite: 'Also rewrite old paths mentioned in the conversation',
+      pathsRewriteHint: 'Rewrites old path strings in message history and tool calls so a resumed conversation finds files at the new location.',
+      pathsApply: 'Apply',
+      pathsApplying: 'Working…',
+      pathsDone: 'Updated: {from} → {to}',
+      pathsRewritten: ' ({n} paths rewritten)',
+      pathsRestart: 'Quit DSH completely and reopen it for the sidebar and projections to pick this up.',
+      pathsRestartShort: 'restart DSH to apply',
       tabImport: 'Import (new computer)',
       projects: 'Workspaces',
       projectsHint: 'Selected workspaces carry their sessions; sub-sessions are included automatically.',
@@ -480,6 +540,31 @@ window.__ModuleLoader__.load({
       get: (path) => request(path, { headers: { accept: 'application/json' } }),
       post: (path, body) =>
         request(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body || {}),
+        }),
+    }
+
+    // 会话路径是独立功能：自己的接口前缀，和迁移的 api 互不依赖
+    const API_PATHS = '/api/dsh-session-path'
+
+    async function pathsRequest(path, options) {
+      const response = await fetch(API_PATHS + path, options)
+      let payload = null
+      try {
+        payload = await response.json()
+      } catch {
+        payload = null
+      }
+      if (!response.ok) throw new Error((payload && payload.error) || `HTTP ${response.status}`)
+      return payload
+    }
+
+    const pathsApi = {
+      get: (path) => pathsRequest(path, { headers: { accept: 'application/json' } }),
+      post: (path, body) =>
+        pathsRequest(path, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body || {}),
@@ -1939,6 +2024,228 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function PathsPane(props) {
+      const { t, pick, canPick } = props
+      const [data, setData] = useState(null)
+      const [error, setError] = useState(null)
+      const [notice, setNotice] = useState(null)
+      const [loading, setLoading] = useState(false)
+      const [query, setQuery] = useState('')
+      const [selection, setSelection] = useState(null)
+      const [target, setTarget] = useState('')
+      const [rewrite, setRewrite] = useState(true)
+      const [busy, setBusy] = useState(false)
+      const [collapsed, setCollapsed] = useState({})
+      const [moveFiles, setMoveFiles] = useState(true)
+
+      const load = useCallback(async () => {
+        setLoading(true)
+        setError(null)
+        try {
+          setData(await pathsApi.get('/list'))
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause))
+        } finally {
+          setLoading(false)
+        }
+      }, [])
+
+      useEffect(() => {
+        load()
+      }, [load])
+
+      const groups = (data && Array.isArray(data.groups) ? data.groups : [])
+        .map((group) => {
+          const keyword = query.trim().toLowerCase()
+          if (!keyword) return group
+          const matched = group.sessions.filter((row) =>
+            [row.title, row.cwd].some((value) => String(value || '').toLowerCase().includes(keyword)),
+          )
+          return matched.length > 0 ? { ...group, sessions: matched } : null
+        })
+        .filter(Boolean)
+
+      const currentGroup = selection && selection.mode === 'workspace'
+        ? groups.find((group) => group.cwd === selection.cwd) || null
+        : null
+      const currentSession = selection && selection.mode === 'session'
+        ? groups.flatMap((group) => group.sessions).find((row) => row.id === selection.id) || null
+        : null
+      const active = currentGroup || currentSession
+
+      const browse = async () => {
+        if (!canPick) return
+        const dir = await pick()
+        if (dir) setTarget(dir)
+      }
+
+      const apply = async () => {
+        if (!active || !target.trim() || busy) return
+        setBusy(true)
+        setError(null)
+        setNotice(null)
+        try {
+          const body = { newCwd: target.trim(), rewritePaths: rewrite }
+          const result = currentGroup
+            ? await pathsApi.post('/workspace-apply', { ...body, cwd: currentGroup.cwd, moveFiles })
+            : await pathsApi.post('/apply', { ...body, sessionId: currentSession.id })
+          const rewritten = result.rewritten > 0 ? t('pathsRewritten').replace('{n}', String(result.rewritten)) : ''
+          const files = result.filesCopied > 0 ? t('pathsFilesCopied').replace('{n}', String(result.filesCopied)) : ''
+          setNotice(`${t('pathsDone').replace('{from}', result.oldCwd || result.fromCwd).replace('{to}', result.newCwd)}${rewritten} ${t('pathsRestart')}`)
+          setSelection(null)
+          setTarget('')
+          await load()
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const repair = async () => {
+        if (busy) return
+        setBusy(true)
+        setError(null)
+        setNotice(null)
+        try {
+          const result = await pathsApi.post('/reconcile', {})
+          const attachedCount = result.attached || 0
+          setNotice(attachedCount > 0 ? t('pathsRepaired').replace('{n}', String(attachedCount)) : t('pathsRepairOffline'))
+          await load()
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const selectSession = (row) => {
+        setSelection({ mode: 'session', id: row.id })
+        setTarget(row.cwd || '')
+        setNotice(null)
+      }
+      const selectGroup = (group) => {
+        setSelection({ mode: 'workspace', cwd: group.cwd })
+        setTarget(group.cwd || '')
+        setNotice(null)
+      }
+
+      return h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        h('div', { style: C.hint }, t('pathsHint')),
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8 } },
+          h('input', {
+            style: { ...C.input, flex: 1 },
+            value: query,
+            placeholder: t('pathsSearch'),
+            onChange: (event) => setQuery(event.target.value),
+          }),
+          h('button', { style: C.button, onClick: load, disabled: loading }, loading ? t('pathsLoading') : t('pathsRefresh')),
+          h('button', { style: C.button, onClick: repair, disabled: loading }, t('pathsRepair')),
+        ),
+        error ? h('div', { style: C.error }, error) : null,
+        notice ? h('div', { style: C.ok }, notice) : null,
+        data && data.fixTool && data.fixTool.bat
+          ? h('div', { style: C.hint }, t('pathsFixToolHint').replace('{path}', String(data.fixTool.bat)))
+          : null,
+        data
+          ? h(
+              'div',
+              { style: C.card },
+              h(
+                'div',
+                { style: { maxHeight: 300, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 10 } },
+                groups.length === 0 ? h('div', { style: C.hint }, t('pathsEmpty')) : null,
+                ...groups.map((group) =>
+                  h(
+                    'div',
+                    { key: group.cwd || group.title, style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                    h(
+                      'div',
+                      { style: { display: 'flex', gap: 8, alignItems: 'baseline', justifyContent: 'space-between' } },
+                      h(
+                        'button',
+                        {
+                          style: { ...C.row, display: 'flex', flexDirection: 'column', gap: 2, cursor: 'pointer', textAlign: 'left', border: 'none', background: 'transparent', padding: 0 },
+                          onClick: () => setCollapsed((previous) => ({ ...previous, [group.cwd]: !previous[group.cwd] })),
+                          title: t('pathsCollapseHint'),
+                        },
+                        h('span', { style: { fontWeight: 600 } }, `${collapsed[group.cwd] ? '▸' : '▾'} ${group.title || t('pathsUntitled')}`),
+                        h('span', { style: { ...C.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }, title: group.cwd || '' }, group.cwd || t('pathsNoCwd')),
+                      ),
+                      h(
+                        'div',
+                        { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                        h('span', { style: C.hint }, t('pathsGroupCount').replace('{n}', String(group.sessions.length))),
+                        h('button', { style: C.button, onClick: () => selectGroup(group) }, t('pathsMoveAll')),
+                      ),
+                    ),
+                    ...(collapsed[group.cwd] ? [] : group.sessions).map((row) =>
+                      h(
+                        'button',
+                        {
+                          key: row.id,
+                          style: {
+                            ...C.row,
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            background: selection && selection.mode === 'session' && selection.id === row.id ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+                            border: `1px solid ${selection && selection.mode === 'session' && selection.id === row.id ? 'var(--dsw-alias-brand-primary)' : 'transparent'}`,
+                          },
+                          onClick: () => selectSession(row),
+                        },
+                        h(
+                          'div',
+                          { style: { display: 'flex', gap: 8, alignItems: 'baseline', justifyContent: 'space-between' } },
+                          h('span', {}, row.title || t('pathsUntitled')),
+                          h('span', { style: C.hint }, row.live ? t('pathsLive') : row.events != null ? `${row.events} ${t('eventsCount')}` : ''),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : null,
+        active
+          ? h(
+              'div',
+              { style: C.card },
+              h('div', { style: C.hint }, currentGroup ? t('pathsWorkspaceHint').replace('{n}', String(currentGroup.sessions.length)) : ''),
+              h('div', { style: C.label }, t('pathsNewPath')),
+              h(
+                'div',
+                { style: { display: 'flex', gap: 8 } },
+                h('input', {
+                  style: { ...C.input, flex: 1 },
+                  value: target,
+                  onChange: (event) => setTarget(event.target.value),
+                  placeholder: 'D:\\path\\to\\project',
+                }),
+                h('button', { style: C.button, onClick: browse, disabled: !canPick }, t('pathsBrowse')),
+              ),
+              currentGroup ? h('label', { style: C.label }, h(Checkbox, { checked: moveFiles, onChange: setMoveFiles }), t('pathsMoveFiles')) : null,
+              currentGroup ? h('div', { style: C.hint }, t('pathsMoveFilesHint')) : null,
+              h('label', { style: C.label }, h(Checkbox, { checked: rewrite, onChange: setRewrite }), t('pathsRewrite')),
+              h('div', { style: C.hint }, t('pathsRewriteHint')),
+              h(
+                'div',
+                { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                h(
+                  'button',
+                  { style: busy ? { ...C.primary, ...C.primaryOff } : C.primary, disabled: busy || !target.trim(), onClick: apply },
+                  busy ? t('pathsApplying') : t('pathsApply'),
+                ),
+                h('span', { style: C.hint }, t('pathsRestartShort')),
+              ),
+            )
+          : null,
+      )
+    }
+
     function MigrateSection(props) {
       const t = props.t
       const { pick, canPick, startSession, canInstallSession } = props
@@ -1971,13 +2278,16 @@ window.__ModuleLoader__.load({
           { style: C.tabs },
           h('button', { style: { ...C.tab, ...(tab === 'export' ? C.tabActive : {}) }, onClick: () => setTab('export') }, t('tabExport')),
           h('button', { style: { ...C.tab, ...(tab === 'import' ? C.tabActive : {}) }, onClick: () => setTab('import') }, t('tabImport')),
+          h('button', { style: { ...C.tab, ...(tab === 'paths' ? C.tabActive : {}) }, onClick: () => setTab('paths') }, t('tabPaths')),
         ),
         inventory && Number(inventory.codeVersion) < 13
           ? h('div', { style: C.warn }, t('hostTooOld'))
           : null,
         tab === 'export'
           ? h(ExportPane, { t, inventory, reload: load, pick, canPick })
-          : h(ImportPane, { t, inventory, reload: load, pick, canPick, startSession, canInstallSession }),
+          : tab === 'paths'
+            ? h(PathsPane, { t, pick, canPick })
+            : h(ImportPane, { t, inventory, reload: load, pick, canPick, startSession, canInstallSession }),
       )
     }
 
