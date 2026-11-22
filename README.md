@@ -96,7 +96,7 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 
 如果重启后侧栏仍看不到会话，说明工作区登记表还是旧的：页面会给出离线修复脚本路径
 （`~/.dsh/storages/dsh-migrate-fix-workspace.bat`），完全退出 DSH 后双击运行一次，再打开即可。
-脚本源码随包发布在 `tools/fix-workspace-sessions.mjs`。
+- `tools/fix-workspace-sessions.mjs`：离线修复脚本（DSH 关闭后运行），把「日志头已指向工作区路径、但登记表里没挂上」的会话补登记；顺带修复首帧多行等旧日志格式问题
 
 ## 兼容模式
 
@@ -136,8 +136,25 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 - 	ools/fix-workspace-sessions.mjs：离线修复脚本（DSH 关闭后运行），把「日志头已指向工作区路径、但登记表里没挂上」的会话补登记；顺带修复首帧多行等旧日志格式问题
 - `client.js`：Client 半边。注册 `settings.section` 的 `migration` 页签，纯 React 无构建
 
-本地自检脚本（不随包发布，放在仓库外的开发目录）：
+本地自检脚本（不随包发布，放在仓库外的开发目录；用假的 `sessionPersistence` / `workspaceRegistry` 跑真代码）：
 
+```bash
+node check-routes.mjs index.js              # 每个路由必须有响应
+node client-smoke.mjs client.js             # 客户端渲染冒烟（严格上下文）
+node pure-functions-test.mjs index.js       # 纯函数单测
+node crossos-test.mjs index.js              # 跨系统目录包端到端
+node crossos-zip-test.mjs index.js          # 归档包 + 非法文件名
+node samesys-test.mjs index.js              # 同系统全链路：导出→导入→续聊→撤销
+node files-incremental-test.mjs index.js    # 目标目录非空时只补新增文件
+node append-decision-test.mjs index.js      # 同名会话的追加 / 分叉判定
+node append-lock-test.mjs index.js          # 追加锁
+node resequence-test.mjs index.js           # seq 重编号
+node compaction-test.mjs index.js           # 兼容模式：压缩记账 / checkpoint / 重放事件
+node context-trim-test.mjs index.js         # 兼容模式：上下文裁剪与回合重编号
+node head-repair-test.mjs index.js          # 受保护 system/message 头补齐
+node undo-probe-test.mjs index.js           # 撤销探测：只打开过会话不算聊过
+node session-path-test.mjs index.js         # 会话路径：分组 / 单条 / 整体 / 搬文件 / 备份
+node incremental-plugins-test.mjs index.js  # 增量更新不擅自增删插件清单
 ```bash
 node check-routes.mjs index.js        # 每个路由必须有响应
 node client-smoke.mjs client.js       # 客户端渲染冒烟
