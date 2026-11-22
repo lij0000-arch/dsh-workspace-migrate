@@ -3,10 +3,11 @@
 // 用法: node fix-workspace-sessions.mjs [--dry]
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import zlib from 'node:zlib'
 
 const DRY = process.argv.includes('--dry')
-const HOME = process.env.DSH_HOME || path.join(process.env.USERPROFILE || 'C:/Users/Administrator', '.dsh')
+const HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 const WS_FILE = path.join(HOME, 'storages', 'workspace.json')
 const SESSIONS = path.join(HOME, 'sessions')
 const TRASH = path.join(HOME, 'trash')

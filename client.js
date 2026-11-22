@@ -2165,22 +2165,22 @@ window.__ModuleLoader__.load({
                     { key: group.cwd || group.title, style: { display: 'flex', flexDirection: 'column', gap: 4 } },
                     h(
                       'div',
-                      { style: { display: 'flex', gap: 8, alignItems: 'baseline', justifyContent: 'space-between' } },
+                      { style: { display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', minWidth: 0 } },
                       h(
                         'button',
                         {
-                          style: { ...C.row, display: 'flex', flexDirection: 'column', gap: 2, cursor: 'pointer', textAlign: 'left', border: 'none', background: 'transparent', padding: 0 },
+                          style: { ...C.row, display: 'flex', flexDirection: 'column', gap: 2, cursor: 'pointer', textAlign: 'left', border: 'none', background: 'transparent', padding: 0, flex: '1 1 auto', minWidth: 0, overflow: 'hidden' },
                           onClick: () => setCollapsed((previous) => ({ ...previous, [group.cwd]: !previous[group.cwd] })),
                           title: t('pathsCollapseHint'),
                         },
-                        h('span', { style: { fontWeight: 600 } }, `${collapsed[group.cwd] ? '▸' : '▾'} ${group.title || t('pathsUntitled')}`),
-                        h('span', { style: { ...C.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }, title: group.cwd || '' }, group.cwd || t('pathsNoCwd')),
+                        h('span', { style: { fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' } }, `${collapsed[group.cwd] ? '▸' : '▾'} ${group.title || t('pathsUntitled')}`),
+                        h('span', { style: { ...C.mono, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%', minWidth: 0 }, title: group.cwd || '' }, group.cwd || t('pathsNoCwd')),
                       ),
                       h(
                         'div',
-                        { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-                        h('span', { style: C.hint }, t('pathsGroupCount').replace('{n}', String(group.sessions.length))),
-                        h('button', { style: C.button, onClick: () => selectGroup(group) }, t('pathsMoveAll')),
+                        { style: { display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0, whiteSpace: 'nowrap' } },
+                        h('span', { style: { ...C.hint, whiteSpace: 'nowrap' } }, t('pathsGroupCount').replace('{n}', String(group.sessions.length))),
+                        h('button', { style: { ...C.button, flexShrink: 0, whiteSpace: 'nowrap' }, onClick: () => selectGroup(group) }, t('pathsMoveAll')),
                       ),
                     ),
                     ...(collapsed[group.cwd] ? [] : group.sessions).map((row) =>
@@ -2199,9 +2199,9 @@ window.__ModuleLoader__.load({
                         },
                         h(
                           'div',
-                          { style: { display: 'flex', gap: 8, alignItems: 'baseline', justifyContent: 'space-between' } },
-                          h('span', {}, row.title || t('pathsUntitled')),
-                          h('span', { style: C.hint }, row.live ? t('pathsLive') : row.events != null ? `${row.events} ${t('eventsCount')}` : ''),
+                          { style: { display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between', minWidth: 0 } },
+                          h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.title || t('pathsUntitled')),
+                          h('span', { style: { ...C.hint, flexShrink: 0, whiteSpace: 'nowrap' } }, row.live ? t('pathsLive') : row.events != null ? `${row.events} ${t('eventsCount')}` : ''),
                         ),
                       ),
                     ),
