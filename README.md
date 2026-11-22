@@ -78,6 +78,19 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 - 跨系统的自动化测试覆盖了路径改写、分隔符转换、Windows 非法文件名清洗，但真机只有 Windows 验证过；迁到 Mac/Linux 建议先小批量试
 - 体检的准确性依赖【导入到】目录：留空时路径比对只能用启发式，带空格的旧路径可能被判成「两边都有新增」
 
+## 兼容模式
+
+某些会话导入后打不开，或打开后没法续聊。插件会在导入时**自动识别并处理**这类会话，不需要手动开关：
+
+| 情况 | 原因 |
+|---|---|
+| 导入后提示「会话无法读取」 | 会话由旧版 DSH 写入，新版因压缩/请求记账校验不通过而拒绝加载 |
+| 续聊报上下文超限 | 会话太长（几十万到几百万 token），整段历史装不进模型窗口 |
+
+处理方式是：丢弃压缩与请求记账、把覆盖操作改成追加、按上下文预算只保留最近若干回合，并把回合序号重新从 1 编号。**消息与工具调用都保留**，只是更早的历史不在应用里，原始迁移包仍完整保留。
+
+结果卡片会写明本次做了哪些调整（例如「会话过长，已只保留最近 N 个回合」）。如果某条会话确实需要完整历史，可以在旧机器上把它拆成多个会话后再分别打包。
+
 ## 致谢
 
 这个插件的不少改进来自使用者的反馈，感谢他们：
@@ -101,18 +114,21 @@ DSH 的会话日志同一时间只允许一个写入者。目标会话开着或�
 - `index.js`：Host 半边。注册 `sessionPersistence` / `workspaceRegistry` / `webServer`，在 `/api/dsh-migrate` 下提供 `inventory` / `bundle-info` / `scan` / `preview` / `check` / `export` / `import` / `task` / `rollback` / `cleanup` / `setup-workspace` / `last-import`
 - `client.js`：Client 半边。注册 `settings.section` 的 `migration` 页签，纯 React 无构建
 
-本地自检脚本（不随包发布，在开发者的 `_publish/` 目录）：
+本地自检脚本（不随包发布，放在仓库外的开发目录）：
 
 ```bash
-node _publish/check-routes.mjs dsh-migrate/index.js      # 每个路由必须有响应
-node _publish/client-smoke.mjs dsh-migrate/client.js     # 客户端渲染冒烟
-node _publish/pure-functions-test.mjs dsh-migrate/index.js
-node _publish/crossos-test.mjs dsh-migrate/index.js      # 跨系统目录包端到端
-node _publish/crossos-zip-test.mjs dsh-migrate/index.js  # 归档包 + 非法文件名
-node _publish/append-decision-test.mjs dsh-migrate/index.js
-node _publish/append-lock-test.mjs dsh-migrate/index.js
-node _publish/resequence-test.mjs dsh-migrate/index.js
-node _publish/files-incremental-test.mjs dsh-migrate/index.js
+node check-routes.mjs index.js        # 每个路由必须有响应
+node client-smoke.mjs client.js       # 客户端渲染冒烟
+node pure-functions-test.mjs index.js
+node crossos-test.mjs index.js        # 跨系统目录包端到端
+node crossos-zip-test.mjs index.js    # 归档包 + 非法文件名
+node append-decision-test.mjs index.js
+node append-lock-test.mjs index.js
+node resequence-test.mjs index.js
+node files-incremental-test.mjs index.js
+node compaction-test.mjs index.js     # 兼容模式：压缩记账 / checkpoint / 重放事件
+node context-trim-test.mjs index.js   # 兼容模式：上下文裁剪与回合重编号
+node undo-probe-test.mjs index.js     # 撤销探测：只打开过会话不算聊过
 ```
 
 ## License

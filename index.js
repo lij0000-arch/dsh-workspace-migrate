@@ -320,18 +320,139 @@ export function apply(ctx, config = {}) {
    * in an imported Session adds events, and deleting that Session would throw
    * those away, so any growth flips the record to unsafe.
    */
+  /** 会进入模型上下文的文本量（只算 surface 事件里的文本块）。 */
+  function surfaceTextLength(events) {
+    let total = 0
+    for (const event of events) {
+      if (!event || event.surfaceOp === undefined) continue
+      const blocks = event.data?.message?.content ?? event.data?.content
+      if (!Array.isArray(blocks)) continue
+      for (const block of blocks) if (block && typeof block.text === 'string') total += block.text.length
+    }
+    return total
+  }
+
+  /**
+   * 裁剪后回合号不再从 1 开始，读取器会报 "turn/start does not open the expected
+   * turn"。把 turn/step 重新从 1 编号，并同步所有事件里的 data.turn / data.step。
+   */
+  function renumberTurns(events) {
+    const turnMap = new Map()
+    const stepMaps = new Map()
+    let nextTurn = 1
+    for (const event of events) {
+      const type = String(event && event.type)
+      if (type === 'turn/start') {
+        const old = event.data?.turn
+        if (typeof old === 'number' && !turnMap.has(old)) turnMap.set(old, nextTurn)
+        nextTurn += 1
+        continue
+      }
+      if (type === 'step/start') {
+        const turn = event.data?.turn
+        const mappedTurn = turnMap.has(turn) ? turnMap.get(turn) : turn
+        if (!stepMaps.has(mappedTurn)) stepMaps.set(mappedTurn, new Map())
+        const map = stepMaps.get(mappedTurn)
+        const old = event.data?.step
+        if (typeof old === 'number' && !map.has(old)) map.set(old, map.size + 1)
+      }
+    }
+    if (turnMap.size === 0) return events
+    for (const event of events) {
+      const data = event && event.data
+      if (!data || typeof data !== 'object') continue
+      if (typeof data.turn === 'number' && turnMap.has(data.turn)) {
+        const mappedTurn = turnMap.get(data.turn)
+        data.turn = mappedTurn
+        if (typeof data.step === 'number') {
+          const map = stepMaps.get(mappedTurn)
+          if (map && map.has(data.step)) data.step = map.get(data.step)
+        }
+      }
+    }
+    return events
+  }
+  /**
+   * 会话太长时只保留最近若干回合：模型窗口装不下整段历史，硬导入的结果就是
+   * 「导入成功、一发消息就 CONTEXT_WINDOW_EXCEEDED」。按 surface 文本量估算 token
+   * （中文约 2 字符/token），并从 turn/start 处切，保证日志从回合边界开始。
+   */
+  function trimToContextBudget(events, budgetChars) {
+    const turns = []
+    for (let i = 0; i < events.length; i += 1) if (events[i] && events[i].type === 'turn/start') turns.push(i)
+    if (turns.length === 0) return { kept: events, dropped: 0, startSeq: 0 }
+    // 从最早的 turn 往后找「装得下的最长后缀」，而不是从最后一个 turn 往前找一个
+    // 刚好装下的（那样永远只留 1 个回合）。
+    // 文本量随起点后移单调下降：第一个装得下的起点就是「最长的可保留后缀」。
+    for (let k = 0; k < turns.length; k += 1) {
+      const suffix = events.slice(turns[k])
+      if (surfaceTextLength(suffix) <= budgetChars) {
+        return { kept: suffix, dropped: turns[k], startSeq: turns[k], turns: turns.length - k }
+      }
+    }
+    const last = events.slice(turns[turns.length - 1])
+    return { kept: last, dropped: turns[turns.length - 1], startSeq: turns[turns.length - 1], turns: 1 }
+  }
+  /**
+   * 旧版 DSH 在压缩时会重放早先的 tool/result 等事件，它们带着旧 turn/step 却落在
+   * 当前 turn 中间。新版读取器要求这些事件"落在已开启的 turn/step 内"，否则整条
+   * 会话判损。兼容模式下把这类重放事件丢掉（内容在更早的位置已经存在）。
+   */
+  function dropOutOfTurnEvents(events) {
+    const kept = []
+    const dialog = new Set(['tool/call', 'tool/result', 'assistant/message', 'assistant/attempt'])
+    let turn = null
+    let step = null
+    let dropped = 0
+    for (const event of events) {
+      const type = String(event && event.type)
+      if (type === 'turn/start') { turn = event.data?.turn ?? null; step = null }
+      else if (type === 'turn/end') { turn = null; step = null }
+      else if (type === 'step/start') { step = event.data?.step ?? null }
+      else if (type === 'step/end') { step = null }
+      else if (dialog.has(type)) {
+        const t = event.data?.turn
+        const s = event.data?.step
+        const mismatch = (t !== undefined && t !== turn) || (s !== undefined && s !== step)
+        if (mismatch) { dropped += 1; continue }
+      }
+      kept.push(event)
+    }
+    return { kept, dropped }
+  }
+  /**
+   * 只数「用户看得见的事件」：打开/恢复会话时宿主会追加 delivery marker 之类的
+   * 记账事件，那些不算「又聊过」。记账事件可能出现在任意位置（后续消息会追加在
+   * 它后面），所以整体过滤，而不是只看尾部。
+   */
+  function contentEventCount(events) {
+    if (!Array.isArray(events)) return 0
+    let count = 0
+    for (const event of events) {
+      if (!event) continue
+      if (event.ignorable === true) continue
+      if (isBookkeepingEvent(event)) continue
+      count += 1
+    }
+    return count
+  }
+
   async function probeLastImport() {
     const record = await readLastImport()
     if (!record) return null
     const counts = record.counts && typeof record.counts === 'object' ? record.counts : {}
+    const contentCounts = record.contentCounts && typeof record.contentCounts === 'object' ? record.contentCounts : {}
     const changed = []
     const missing = []
-    for (const [id, recorded] of Object.entries(counts)) {
+    for (const id of Object.keys(counts)) {
+      // 老记录没有 contentCounts：用原始计数当上限，配合内容计数比较（只会更宽松，
+      // 不会把「打开过」误判成「聊过」）。
+      const recorded = Number.isFinite(contentCounts[id]) ? contentCounts[id] : counts[id]
       try {
         const handle = await ctx.sessionPersistence.open(id, 'read')
         try {
           const { events } = await handle.read()
-          const current = Array.isArray(events) ? events.length : 0
+          const current = contentEventCount(events)
           if (current > recorded) changed.push({ id, recorded, current })
         } finally {
           await handle.close()
@@ -1930,7 +2051,7 @@ export function apply(ctx, config = {}) {
   }
 
   /** Seq-valued fields that must follow a renumbered event forward. */
-  const SEQ_REF_KEYS = new Set(['throughSeq', 'headerSeq', 'messageSeqs', 'shadowedSeqs', 'sourceEventSeqs'])
+  const SEQ_REF_KEYS = new Set(['throughSeq', 'headerSeq', 'messageSeqs', 'shadowedSeqs', 'sourceEventSeqs', 'startSeq', 'endSeq'])
 
   /** Shift seq references at or after `threshold` by one, so a fork marker fits. */
   function shiftSeqRefs(value, threshold, delta = 1, key = null) {
@@ -1949,11 +2070,22 @@ export function apply(ctx, config = {}) {
    * remaining event and moving the seq references inside them along.
    */
   function compactEventSeq(events) {
+    return renumberEvents(events, (event) => event.type === 'session/end-seed')
+  }
+
+  /**
+   * Drop the events `shouldDrop` accepts, then renumber what is left and move
+   * every seq reference along with it. Used when a log written by another DSH
+   * build cannot be read here as-is (e.g. compaction bookkeeping the local
+   * reader refuses), where keeping the conversation matters more than keeping
+   * the optimization records.
+   */
+  function renumberEvents(events, shouldDrop) {
     const kept = []
     const mapping = new Map()
     for (const event of events) {
       if (!event) continue
-      if (event.type === 'session/end-seed') continue
+      if (shouldDrop && shouldDrop(event)) continue
       const oldSeq = Number(event.seq)
       if (Number.isFinite(oldSeq)) mapping.set(oldSeq, kept.length)
       kept.push({ ...event, seq: kept.length })
@@ -2546,6 +2678,7 @@ export function apply(ctx, config = {}) {
       workspaces: merged.recordSink.workspaces,
       sessions: merged.recordSink.sessions,
       counts: merged.recordSink.counts,
+      contentCounts: merged.recordSink.contentCounts,
     })
     task.done += 1
     return merged
@@ -2647,6 +2780,7 @@ export function apply(ctx, config = {}) {
     const newWorkspaceIds = []
     const newSessionIds = []
     const sessionCounts = {}
+    const contentCounts = {}
     const report = {
       path: dir,
       crossOs,
@@ -2920,6 +3054,7 @@ export function apply(ctx, config = {}) {
             }
             report.sessionsForked.push({ id: forkId, from: sourceId, prefix, tail: tail.length })
             sessionCounts[forkId] = prefix + (titleEvent ? 1 : 0) + tail.length + 1
+            contentCounts[forkId] = contentEventCount([...localEvents.slice(0, prefix), marker, ...(titleEvent ? [titleEvent] : []), ...tail])
             newSessionIds.push(forkId)
             const match = created.find((entry) => normalKey(header.cwd ?? '') === normalKey(entry.target))
             if (match) {
@@ -2966,6 +3101,7 @@ export function apply(ctx, config = {}) {
               }
               report.sessionsCopied.push({ id: copyId, from: sourceId, reason })
               sessionCounts[copyId] = copyEvents.length
+              contentCounts[copyId] = contentEventCount(copyEvents)
               newSessionIds.push(copyId)
               const target = created.find((entry) => normalKey(copyHeader.cwd ?? '') === normalKey(entry.target))
               if (target) {
@@ -3095,6 +3231,88 @@ export function apply(ctx, config = {}) {
           report.seedMarkersPreserved = (report.seedMarkersPreserved ?? 0) + events.filter((event) => event && event.type === 'session/end-seed').length
         }
 
+        // 旧版 DSH 会把 compaction/prune 写在 compaction/start 之前（上下文先被裁，
+        // 之后才记一次压缩）。新版读取器要求每个 checkpoint 都有匹配的 start，于是
+        // 整条会话报 "compaction checkpoint has no matching compaction/start"。
+        // 这种「prune 早于任何 start」的日志自动按兼容模式处理，不必让用户勾选。
+        let autoDropCompaction = false
+        if (options.dropCompaction !== true) {
+          const firstStart = events.findIndex((event) => event && event.type === 'compaction/start')
+          const earlyPrune = events.some(
+            (event, index) => event && event.type === 'compaction/prune' && (firstStart < 0 || index < firstStart),
+          )
+          if (earlyPrune) {
+            autoDropCompaction = true
+            report.compactionAutoDropped = (report.compactionAutoDropped ?? 0) + 1
+          }
+        }
+        // 可选兼容模式：旧版 DSH 写的日志里带 compaction/prune 记账，本地读取器会
+        // 以「shadowedSeqs 不是当前 surface 的精确区间」拒绝整条会话。丢掉这些记账
+        // 事件（消息本身都在），再重编号并搬移所有 seq 引用。
+        if (options.dropCompaction === true || autoDropCompaction) {
+          const before = events.length
+          // compaction/* 与「压缩产出」的 checkpoint 消息是一体的：只丢前者，后者会
+          // 变成「没有 start 的 checkpoint」，新版读取器照样拒绝。两者一起丢。
+          const kept = events.filter(
+            (event) =>
+              !/^compaction\//.test(String(event && event.type)) &&
+              event?.data?.source?.kind !== 'compact-checkpoint',
+          )
+          if (kept.length !== before) {
+            events = renumberEvents(kept, null)
+            report.compactionDropped = (report.compactionDropped ?? 0) + (before - kept.length)
+            // 删掉事件后，原来那些 `surfaceOp: replace` 的区间（tool/result 覆盖、
+            // checkpoint 收敛等）就落在「当前 surface」之外了，新版读取器会报
+            // "replacement range is not on the current surface"。
+            // 兼容模式里把覆盖改成追加：内容都在，只是同一段上下文会多出一条记录。
+            let flattenedOps = 0
+            for (const event of events) {
+              if (event && event.surfaceOp && typeof event.surfaceOp === 'object' && event.surfaceOp.op === 'replace') {
+                event.surfaceOp = 'append'
+                delete event.sourceEventSeqs
+                flattenedOps += 1
+              }
+            }
+            if (flattenedOps > 0) report.replaceOpsFlattened = (report.replaceOpsFlattened ?? 0) + flattenedOps
+            // 压缩重放出来的旧 turn/step 事件一并清掉，否则新版读取器报
+            // "tool/result does not match an open turn and step"。
+            const repaired = dropOutOfTurnEvents(events)
+            if (repaired.dropped > 0) {
+              events = renumberEvents(repaired.kept, null)
+              report.turnStepRepaired = (report.turnStepRepaired ?? 0) + repaired.dropped
+            }
+          }
+            // 整段历史可能远超模型窗口（本例约 3.4M token）。导入前先按预算裁到最近
+            // 若干回合，否则会出现「导入成功，一发消息就 CONTEXT_WINDOW_EXCEEDED」。
+            const budgetChars = Number(options.contextBudgetChars) > 0 ? Number(options.contextBudgetChars) : 700_000
+            const estimate = Math.round(surfaceTextLength(events) / 2)
+            if (estimate > budgetChars / 2) {
+              const trimmed = trimToContextBudget(events, budgetChars)
+              if (trimmed.dropped > 0) {
+                // 裁剪会切断「请求」链：llm/retry 之类记账事件找不到匹配的
+                // request/header，新版读取器报 "retry provider does not match the
+                // open request/header"。这些纯记账事件一并丢掉，内容事件不受影响。
+                const content = trimmed.kept.filter(
+                  (event) =>
+                    !/^llm\//.test(String(event && event.type)) &&
+                    !/^request\//.test(String(event && event.type)) &&
+                    !/^session-log-/.test(String(event && event.type)) &&
+                    !/-llm-request$/.test(String(event && event.type)) &&
+                    String(event && event.type) !== 'assistant/attempt' &&
+                    // 收件箱拼接依赖此前状态，裁剪后首条 splice 往往落在区间外
+                    // （invalid persisted inbox splice）；队列记账一并丢掉。
+                    String(event && event.type) !== 'agent/inbox/spliced',
+                )
+                const machineryDropped = trimmed.kept.length - content.length
+                if (machineryDropped > 0) report.machineryDropped = (report.machineryDropped ?? 0) + machineryDropped
+                events = renumberTurns(renumberEvents(content, null))
+                report.contextTrimmed = (report.contextTrimmed ?? 0) + 1
+                report.contextTrimmedEvents = (report.contextTrimmedEvents ?? 0) + trimmed.dropped
+                report.contextTrimmedTurns = trimmed.turns ?? null
+                report.contextEstimatedTokens = Math.round(surfaceTextLength(events) / 2)
+              }
+            }
+        }
         // Inherited events may still name the parent Session; make them name this one.
         events = rewriteForeignSessionIds(events, id)
         // Setting a key to `undefined` leaves an own property that JSON drops, and
@@ -3114,6 +3332,7 @@ export function apply(ctx, config = {}) {
         createdSessions.add(id)
         newSessionIds.push(id)
         sessionCounts[id] = events.length
+        contentCounts[id] = contentEventCount(events)
         report.sessionsImported += 1
         report.importedSessions.push(id)
 
@@ -3214,7 +3433,26 @@ export function apply(ctx, config = {}) {
           const data = await view.read(name)
           if (!data) continue
           await fsp.mkdir(dirname(destination), { recursive: true })
-          await fsp.writeFile(destination, data)
+          // 已存在且大小一致的附件不动它：既省时间，也避免撞上被别的进程占用的文件
+          // （Windows 上表现为 EPERM: operation not permitted）。
+          try {
+            const existing = await fsp.stat(destination)
+            if (existing.size === data.length) continue
+          } catch {
+            /* 不存在就照常写 */
+          }
+          try {
+            await fsp.writeFile(destination, data)
+          } catch (error) {
+            const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+            if (code !== 'EPERM' && code !== 'EACCES') throw error
+            try {
+              await fsp.chmod(destination, 0o666)
+            } catch {
+              /* 去只读失败就再试一次写入 */
+            }
+            await fsp.writeFile(destination, data)
+          }
         }
         report.attachments = names.length > 0
       } catch (error) {
@@ -3288,6 +3526,7 @@ export function apply(ctx, config = {}) {
       options.recordSink.workspaces.push(...newWorkspaceIds)
       options.recordSink.sessions.push(...newSessionIds)
       Object.assign(options.recordSink.counts, sessionCounts)
+      if (options.recordSink.contentCounts) Object.assign(options.recordSink.contentCounts, contentCounts)
     } else if (newWorkspaceIds.length === 0 && newSessionIds.length === 0) {
       // A run that only appended (or only skipped) creates nothing to undo; keep
       // the previous record so「撤销上一次导入」still knows the sessions it made.
@@ -3300,6 +3539,7 @@ export function apply(ctx, config = {}) {
         workspaces: newWorkspaceIds,
         sessions: newSessionIds,
         counts: sessionCounts,
+        contentCounts,
       })
     }
     task.done += 1

@@ -69,7 +69,8 @@ window.__ModuleLoader__.load({
         undoLastTrash: '已移入',
         undoLastNone: '没有可撤销的导入记录',
         undoLastRefused: '部分条目被拒绝',
-        undoLastBlocked: '导入后有 {n} 个会话又聊过，撤销会丢掉新内容，已禁用',
+        undoLastBlocked: '导入后有 {n} 个会话又聊过：撤销会把它们连新内容一起移进回收站（可手动恢复）',
+        undoLastConfirmUnsafe: '注意：其中 {n} 个会话在导入后又聊过，撤销会把它们连新内容一起移进 ~/.dsh/trash（可恢复）。继续？',
         sessionsDiff: '同名会话比对',
         choiceAppend: '更新（只追加）',
         choiceFork: '作为分叉',
@@ -137,6 +138,7 @@ window.__ModuleLoader__.load({
       imported: '已导入会话',
       skipped: '跳过',
       flattened: '展开的 fork 会话',
+      contextTrimmedNote: '会话过长，已只保留最近 {turns} 个回合（丢弃 {events} 条事件，估算 {tokens} token）；更早的历史仍在迁移包里。',
       warnings: '提醒',
       undo: '撤销这次导入',
       undoConfirm: '将删除本次导入创建的项目登记和会话文件，确定吗？',
@@ -153,6 +155,7 @@ window.__ModuleLoader__.load({
       importRootHint: '每个项目会自动建一个以项目名命名的子文件夹；下面每一行仍可单独改。',
       rewritePaths: '重写对话里提到的旧路径',
       rewritePathsHint: '工具调用与结果中的旧绝对路径会换成新路径，续聊时模型才找得到文件。',
+      compatAutoNote: '旧版会话或超长会话会自动启用兼容模式：丢弃压缩与请求记账，并按上下文预算保留最近若干回合（消息与工具调用保留，更早历史仍在迁移包里）。',
       rewrittenPaths: '重写路径',
         renamedFiles: '重命名的文件',
         filesNew: '新增文件',
@@ -240,7 +243,8 @@ window.__ModuleLoader__.load({
         undoLastTrash: 'moved to',
         undoLastNone: 'Nothing to undo',
         undoLastRefused: 'some entries were refused',
-        undoLastBlocked: '{n} imported sessions were continued after the import; undo would discard that, so it is disabled',
+        undoLastBlocked: '{n} imported Session(s) gained new messages: undo moves them, new content included, into the trash (recoverable)',
+        undoLastConfirmUnsafe: 'Note: {n} Session(s) gained new messages after the import. Undo moves them, new content included, into ~/.dsh/trash (recoverable). Continue?',
         sessionsDiff: 'Same-name sessions',
         choiceAppend: 'update (append only)',
         choiceFork: 'merge as fork',
@@ -308,6 +312,7 @@ window.__ModuleLoader__.load({
       imported: 'Sessions imported',
       skipped: 'Skipped',
       flattened: 'Flattened forks',
+      contextTrimmedNote: 'Session too long: kept only the last {turns} turns ({events} events dropped, ~{tokens} tokens). Earlier history stays in the bundle.',
       warnings: 'Notes',
       undo: 'Undo this import',
       undoConfirm: 'This deletes the workspace registrations and session files created by this import. Continue?',
@@ -324,6 +329,7 @@ window.__ModuleLoader__.load({
       importRootHint: 'Each project gets a subfolder named after it; every row below can still be edited.',
       rewritePaths: 'Rewrite old paths mentioned in conversations',
       rewritePathsHint: 'Absolute paths inside tool calls and results are replaced with the new ones, so a resumed conversation finds its files.',
+      compatAutoNote: 'Older or oversized Sessions enable compatibility mode automatically: compaction and request bookkeeping are dropped, and only the most recent turns that fit the context budget are kept (messages and tool calls stay; earlier history remains in the bundle).',
       rewrittenPaths: 'paths rewritten',
         renamedFiles: 'files renamed',
         filesNew: 'files added',
@@ -597,6 +603,9 @@ window.__ModuleLoader__.load({
           ? h('div', { style: C.hint }, `· ${result.subagentSkipped} ${t('subagentsSkipped')}`)
           : null,
         result.flattened > 0 ? h('div', { style: C.hint }, `${t('flattened')}: ${result.flattened}`) : null,
+        result.contextTrimmed > 0
+          ? h('div', { style: C.warn }, t('contextTrimmedNote').replace('{turns}', String(result.contextTrimmedTurns ?? '?')).replace('{events}', String(result.contextTrimmedEvents ?? 0)).replace('{tokens}', String(result.contextEstimatedTokens ?? 0)))
+          : null,
         result.rewritten > 0 ? h('div', { style: C.hint }, `${t('rewrittenPaths')}: ${result.rewritten}`) : null,
         result.renamedFiles > 0 ? h('div', { style: C.hint }, `${t('renamedFiles')}: ${result.renamedFiles}`) : null,
         (result.filesNew || 0) + (result.filesUnchanged || 0) + (result.filesSkippedExisting || 0) > 0
@@ -1362,13 +1371,19 @@ window.__ModuleLoader__.load({
         return () => { alive = false }
       }, [inventory && inventory.lastImport && inventory.lastImport.at])
 
-      const undoBlocked = Boolean(lastImportProbe && lastImportProbe.safe === false)
+      // 撤销不再因为「导入后又聊过」被禁用：那几条会话会整体移进回收站（含新内容），
+      // 恢复目录即可找回。只在确认框和按钮旁边提醒一次。
+      const undoWarn = Boolean(lastImportProbe && lastImportProbe.safe === false)
+      const undoChanged = lastImportProbe && Array.isArray(lastImportProbe.changed) ? lastImportProbe.changed.length : 0
       const undoLast = async () => {
         const record = inventory && inventory.lastImport
         if (!record) return
-        const message = t('undoLastConfirm')
+        const base = t('undoLastConfirm')
           .replace('{w}', String((record.workspaces || []).length))
           .replace('{s}', String((record.sessions || []).length))
+        const message = undoWarn
+          ? base + '\n\n' + t('undoLastConfirmUnsafe').replace('{n}', String(undoChanged))
+          : base
         if (!window.confirm(message)) return
         try {
           const result = await api.post('/rollback', { useLast: true })
@@ -1844,6 +1859,7 @@ window.__ModuleLoader__.load({
               h('label', { style: C.label }, h(Checkbox, { checked: overwriteFiles, onChange: setOverwriteFiles }), t('overwrite')),
               h('label', { style: C.label }, h(Checkbox, { checked: rewritePaths, onChange: setRewritePaths }), t('rewritePaths')),
               h('div', { style: C.hint }, t('rewritePathsHint')),
+              h('div', { style: C.hint }, t('compatAutoNote')),
               h(
                 'button',
                 {
@@ -1912,11 +1928,11 @@ window.__ModuleLoader__.load({
                 { style: { display: 'flex', gap: 8, alignItems: 'center' } },
                 h(
                   'button',
-                  { style: undoBlocked ? { ...C.button, ...C.primaryOff } : C.button, disabled: undoBlocked, onClick: undoLast },
+                  { style: C.button, onClick: undoLast },
                   t('undoLastDo'),
                 ),
                 undoLastNote ? h('span', { style: C.ok }, undoLastNote) : null,
-                undoBlocked && lastImportProbe ? h('span', { style: C.warn }, t('undoLastBlocked').replace('{n}', String((lastImportProbe.changed || []).length))) : null,
+                undoWarn ? h('span', { style: C.warn }, t('undoLastBlocked').replace('{n}', String(undoChanged))) : null,
               ),
             )
           : null,
