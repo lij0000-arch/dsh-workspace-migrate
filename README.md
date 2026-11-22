@@ -22,7 +22,7 @@ dsh plugin add dsh-workspace-migrate
 dsh plugin --profile desktop add dsh-workspace-migrate
 ```
 
-装完在 **设置 → 迁移到另一台电脑** 里使用。要求 DSH `>=0.2.1-rc.2 <0.3.0 || >=0.2.2-rc.1 <0.3.0`。
+装完在 **设置 → 迁移到另一台电脑** 里使用。要求 DSH `>=0.2.1-rc.2 <0.3.0 || >=0.2.2-rc.1 <0.3.0 || >=0.2.3-alpha.1 <0.3.0`。
 
 ## 三步迁移
 
